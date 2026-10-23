@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Carlos Duran <15650777+carlos-duran@users.noreply.github.com>
+Subject: [PATCH] BananaDS: melonDS patch 0097, the others hear at once that we
+ leave
+
+melonDS's LAN EndSession() queued ENet disconnects and destroyed the host
+without sending them, so the other consoles dropped a player who left, or
+saw their host gone, only after ENet's timeout; a player who joined again
+meanwhile was listed twice. Patch 0097 sends them and waits for the
+acknowledgements, 300 ms at most, so a lost network or a quit doesn't
+hang. It covers every way BananaDS ends a session: Disconnect, a mode
+change, Auto ending or leaving one, a lost network (nothing reaches the
+others then; the 300 ms bound applies) and a lost host.
+
+At quit, BananaDS now ends the LAN session in its own teardown, before
+static objects go, instead of leaving it to the LAN object's destructor.
+---
+ bananads/docs/SETTINGS.md | 2 +-
+ bananads/src/emu.cpp      | 3 +++
+ 2 files changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/bananads/docs/SETTINGS.md b/bananads/docs/SETTINGS.md
+index 6e2e449..81fbf86 100644
+--- a/bananads/docs/SETTINGS.md
++++ b/bananads/docs/SETTINGS.md
+@@ -78,7 +78,7 @@ key can also come from the environment as `BANANADS_<KEY>` (dots become undersco
+ | `firmware.language` | the firmware's | 0 Japanese, 1 English, 2 French, 3 German, 4 Italian, 5 Spanish |
+ | `rtc.fixed` | none | the DS clock's start, `YYYY-MM-DD HH:MM:SS` (or `T` or `_` for the space), instead of the current time: two runs of a game that seeds its random numbers from the clock then go the same way (for tests) |
+ | `wifi.dns` | `kaeru` | `kaeru`, `altwfc`, `wiilink`, an IPv4 address, `system` (the handheld's own DNS) or `off` (no Wi-Fi at all) |
+-| `wifi.local` | `off` | local wireless with other handhelds or desktop melonDS on the same network (builds with `BANANADS_LAN`): `host` (a session others join), `join` (look for hosts; pick one in the in-game menu's LAN multiplayer page), `join:<the host's address>` (join that host at the start) or `auto` (see below). The menu's page changes it while the game runs and keeps `off`, `auto`, `host` or `join` here for the next game (a join keeps `join`, not the address).<br>`auto`: nothing until the game turns its wifi on (its multiplayer menu, Download Play); then it listens for the hosts' beacons for 2-3 s and joins a host of the same game (melonDS patch 0096's tag: one hosting by hand first, else the lowest address), else a host that doesn't say its game (desktop melonDS) if no tagged one is there, else hosts. Of two that start together and both host, the one alone with the higher address joins the other once it has heard it twice. Nothing changes during a local wireless game; a player whose host leaves looks again (one of those left hosts); a game that goes online through Nintendo WFC gets no session. When the game turns its wifi off for 3 s of its own time (it left its multiplayer mode; MKDS turns it off and on for under 2 s between its screens) while Auto hosts a session nobody else is in, the session ends and Auto waits again; the paused menu doesn't count. With others in the session (Auto hosting them, or in a host's session) the limit is 30 s (1800 frames), after which Auto ends or leaves the session and waits again (the others look again): MKDS keeps its wifi off for longer than 3 s between looking for groups and creating one. `host` and `join` never end a session for this. Every console in the room on `auto` (or one on `host`, the others on `auto`) is enough.<br>No network (no interface other than loopback up, connected and with an IPv4 address; checked every 1 s): nothing starts and no join is tried, the mode stays as chosen (here too); a session ends when the network goes (the others look again); when it is back, `host` hosts again, `join` looks for hosts, `auto` starts over once the game's wifi is on. Nintendo WFC (slirp) isn't affected |
++| `wifi.local` | `off` | local wireless with other handhelds or desktop melonDS on the same network (builds with `BANANADS_LAN`): `host` (a session others join), `join` (look for hosts; pick one in the in-game menu's LAN multiplayer page), `join:<the host's address>` (join that host at the start) or `auto` (see below). The menu's page changes it while the game runs and keeps `off`, `auto`, `host` or `join` here for the next game (a join keeps `join`, not the address).<br>`auto`: nothing until the game turns its wifi on (its multiplayer menu, Download Play); then it listens for the hosts' beacons for 2-3 s and joins a host of the same game (melonDS patch 0096's tag: one hosting by hand first, else the lowest address), else a host that doesn't say its game (desktop melonDS) if no tagged one is there, else hosts. Of two that start together and both host, the one alone with the higher address joins the other once it has heard it twice. Nothing changes during a local wireless game; a player whose host leaves looks again (one of those left hosts); a game that goes online through Nintendo WFC gets no session. When the game turns its wifi off for 3 s of its own time (it left its multiplayer mode; MKDS turns it off and on for under 2 s between its screens) while Auto hosts a session nobody else is in, the session ends and Auto waits again; the paused menu doesn't count. With others in the session (Auto hosting them, or in a host's session) the limit is 30 s (1800 frames), after which Auto ends or leaves the session and waits again (the others look again): MKDS keeps its wifi off for longer than 3 s between looking for groups and creating one. `host` and `join` never end a session for this. Every console in the room on `auto` (or one on `host`, the others on `auto`) is enough.<br>Leaving a session (Disconnect, a mode change, Auto ending or leaving one, quitting the game) tells the others at once (melonDS patch 0097: ENet's disconnects sent and acknowledged, 300 ms at most), so they drop the player, or see their host gone, at once instead of after ENet's timeout; a lost network can't tell them. A desktop melonDS without that patch is dropped only after the timeout when it leaves.<br>No network (no interface other than loopback up, connected and with an IPv4 address; checked every 1 s): nothing starts and no join is tried, the mode stays as chosen (here too); a session ends when the network goes (the others look again); when it is back, `host` hosts again, `join` looks for hosts, `auto` starts over once the game's wifi is on. Nintendo WFC (slirp) isn't affected |
+ | `wifi.local_players` | `4` | `host`, `auto`: how many may be in the session, the host included (2-16) |
+ | `wifi.local_auto_start` | `wifi` | `auto`: `wifi` waits for the game to turn its wifi on; `now` starts at once (for tests with a game that doesn't) |
+ | `wifi.local_auto_test_wifi` | (none) | `auto`, for tests: the game's wifi as a script by frame, e.g. `on@0,off@2400,on@2500` (instead of the DS's own) |
+diff --git a/bananads/src/emu.cpp b/bananads/src/emu.cpp
+index f81db05..97e3ce0 100644
+--- a/bananads/src/emu.cpp
++++ b/bananads/src/emu.cpp
+@@ -101,6 +101,9 @@ Emu::Emu(const Config& cfg) : cfg_(cfg) {
+ Emu::~Emu() {
+     if (prof_) prof_->finish();  // (its report: the emulator's thread is done by now)
+     flush_save(true);
++#ifdef BANANADS_LAN
++    lan_stop();  // at quit, before the statics go: the others hear that we leave (melonDS patch 0097)
++#endif
+     if (nds_) nds_->Stop();
+     if (net_) net_->UnregisterInstance(0);
+ }

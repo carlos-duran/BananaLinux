@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Carlos Duran <15650777+carlos-duran@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 12:00:00 +0000
+Subject: [PATCH 97/97] LAN: the others hear at once that we leave the session
+
+EndSession() queued an ENet disconnect for each peer and destroyed the
+host right away, so the disconnects were never sent: the host dropped a
+player who left, and the players a host that ended its session, only
+when ENet timed them out, seconds later. A player who joined again
+meanwhile was listed twice.
+
+EndSession() (and so the destructor, at quit) now asks every peer to
+disconnect, flushes, and services the host until they acknowledge, for
+300 ms at most, so that a lost network or a quit doesn't hang. The other
+side needs nothing new: melonDS already handles a peer's disconnect.
+---
+ src/net/LAN.cpp | 35 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 35 insertions(+)
+
+diff --git a/src/net/LAN.cpp b/src/net/LAN.cpp
+index f39b98c..3b3db01 100644
+--- a/src/net/LAN.cpp
++++ b/src/net/LAN.cpp
+@@ -486,6 +486,41 @@ void LAN::EndSession()
+         RemotePeers[i] = nullptr;
+     }
+ 
++    // enet_peer_disconnect only queues the disconnect: destroyed at once, the host never sent it, and the others
++    // dropped us only when ENet timed us out (seconds later; a player who came back meanwhile was listed twice).
++    // Send it and wait for the acknowledgements, 300 ms at most so that a lost network or a quit doesn't hang.
++    // (No Host: only looking for hosts, or a client whose connection failed.)
++    if (Host)
++    {
++        int asked = 0;
++        for (size_t i = 0; i < Host->peerCount; i++)
++        {
++            ENetPeer* peer = &Host->peers[i];
++            if (peer->state == ENET_PEER_STATE_DISCONNECTED || peer->state == ENET_PEER_STATE_ZOMBIE) continue;
++            if (peer->state != ENET_PEER_STATE_DISCONNECTING && peer->state != ENET_PEER_STATE_ACKNOWLEDGING_DISCONNECT)
++                enet_peer_disconnect(peer, 0);
++            asked++;
++        }
++        const u64 t0 = Platform::GetMSCount();
++        int left = asked;
++        enet_host_flush(Host);
++        while (left > 0 && Platform::GetMSCount() - t0 < 300)
++        {
++            ENetEvent event;
++            if (enet_host_service(Host, &event, 10) > 0 && event.type == ENET_EVENT_TYPE_RECEIVE)
++                enet_packet_destroy(event.packet);
++            left = 0;
++            for (size_t i = 0; i < Host->peerCount; i++)
++            {
++                const ENetPeerState st = Host->peers[i].state;
++                if (st != ENET_PEER_STATE_DISCONNECTED && st != ENET_PEER_STATE_ZOMBIE) left++;
++            }
++        }
++        if (asked)
++            Platform::Log(Platform::LogLevel::Debug, "[diag] LAN EndSession: told %d peer%s we leave, %d acknowledged in %llu ms\n",
++                asked, asked == 1 ? "" : "s", asked - left, (unsigned long long)(Platform::GetMSCount() - t0));
++    }
++
+     enet_host_destroy(Host);
+     Host = nullptr;
+     IsHost = false;
