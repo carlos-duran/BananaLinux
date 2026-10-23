@@ -25,7 +25,7 @@ index f525386..edf7b03 100644
 +// MPRecvTimeout wait) is no longer waited for, until it sends us a reply or an auth/association request again
 +const int kMPMaxMisses = 20;
 +
- // [BananaDS LAN test B] diagnostics: Info level, "[diag] LAN" prefix, rate-limited
+ // BananaDS diagnostics: Debug level (BananaDS log.level 0), "[diag] LAN" prefix, rate-limited
  namespace landiag
  {
 @@ -156,6 +160,10 @@ LAN::LAN() noexcept : Inited(false)
@@ -134,7 +134,7 @@ index f525386..edf7b03 100644
 +    MPActiveBitmask = 0;  // our wifi just powered on: nobody is in a DS group with us
 +    memset(MPMissCount, 0, sizeof(MPMissCount));
  
-     Platform::Log(Platform::LogLevel::Info, "[diag] LAN Begin: PlayerConnect broadcast (me=%d, connected=%04X)\n",
+     Platform::Log(Platform::LogLevel::Debug, "[diag] LAN Begin: PlayerConnect broadcast (me=%d, connected=%04X)\n",
          MyPlayer.ID, ConnectedBitmask);
 @@ -1018,6 +1046,8 @@ void LAN::End(int inst)
      if (!Host) return;
@@ -143,7 +143,7 @@ index f525386..edf7b03 100644
 +    MPActiveBitmask = 0;
 +    memset(MPMissCount, 0, sizeof(MPMissCount));
  
-     Platform::Log(Platform::LogLevel::Info, "[diag] LAN End: PlayerDisconnect broadcast (me=%d, connected=%04X)\n",
+     Platform::Log(Platform::LogLevel::Debug, "[diag] LAN End: PlayerDisconnect broadcast (me=%d, connected=%04X)\n",
          MyPlayer.ID, ConnectedBitmask);
 @@ -1031,6 +1061,19 @@ int LAN::SendPacketGeneric(u32 type, u8* packet, int len, u64 timestamp)
  {
@@ -227,7 +227,7 @@ index f525386..edf7b03 100644
 +        {
 +            deferred.push_back(enetpacket);
 +                if (landiag::Allow(landiag::RRecv, 20, "recv"))
-+                    Platform::Log(Platform::LogLevel::Info, "[diag] LAN RecvReplies: %s from player %d kept for the regular RX path\n",
++                    Platform::Log(Platform::LogLevel::Debug, "[diag] LAN RecvReplies: %s from player %d kept for the regular RX path\n",
 +                        enetpacket->dataLength >= sizeof(MPPacketHeader) + 12 + 24
 +                            ? landiag::Kind(&enetpacket->data[sizeof(MPPacketHeader)], (int)(enetpacket->dataLength - sizeof(MPPacketHeader)))
 +                            : "short frame", (int)header->SenderID);
@@ -276,7 +276,7 @@ index f525386..edf7b03 100644
 +    else MPActiveBitmask &= ~(1 << id);
 +    MPMissCount[id] = 0;
 +    if (MPActiveBitmask != old)
-+        Platform::Log(Platform::LogLevel::Info, "[diag] LAN player %d %s local MP with us (%s); MP-active %04X -> %04X\n",
++        Platform::Log(Platform::LogLevel::Debug, "[diag] LAN player %d %s local MP with us (%s); MP-active %04X -> %04X\n",
 +            id, on ? "takes part in" : "no longer takes part in", why, old, MPActiveBitmask);
 +}
 +

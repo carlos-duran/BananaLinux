@@ -21,7 +21,7 @@ index 89bdb02..46641dd 100644
      return (*(u32*)&a[0] == 0xFFFFFFFF) && (*(u16*)&a[4] == 0xFFFF);
  }
  
-+// [BananaDS LAN test B] diagnostics: Info level, "[diag]" prefix, each category at most N lines a second
++// BananaDS diagnostics: Debug level (BananaDS log.level 0), "[diag]" prefix, each category at most N lines a second
 +// (the lines held back are counted and reported with the category's next line)
 +namespace diag
 +{
@@ -34,7 +34,7 @@ index 89bdb02..46641dd 100644
 +    if (r.Start == 0 || (now - r.Start) >= 1000)
 +    {
 +        if (r.Held)
-+            Log(LogLevel::Info, "[diag] (%s: %d more lines not shown in the last second)\n", cat, r.Held);
++            Log(LogLevel::Debug, "[diag] (%s: %d more lines not shown in the last second)\n", cat, r.Held);
 +        r.Start = now; r.N = 0; r.Held = 0;
 +    }
 +    if (r.N < max) { r.N++; return true; }
@@ -106,7 +106,7 @@ index 89bdb02..46641dd 100644
 +    else if (c == 1 && MACEqual(&h[4], kCmd) && bodylen >= 4)
 +        snprintf(extra, sizeof(extra), " clienttime=%d clientmask=%04X", *(const u16*)&h[24], *(const u16*)&h[26]);
 +
-+    Log(LogLevel::Info, "[diag] %s %s fc=%04X dst=%s src=%s a3=%s seq=%d ch=%d rate=%02X len=%d ts=%llu%s%s%s\n",
++    Log(LogLevel::Debug, "[diag] %s %s fc=%04X dst=%s src=%s a3=%s seq=%d ch=%d rate=%02X len=%d ts=%llu%s%s%s\n",
 +        dir, Kind(h), fc, Mac(&h[4]).S, Mac(&h[10]).S, Mac(&h[16]).S, (*(const u16*)&h[22]) >> 4,
 +        buf[9], buf[8], len, (unsigned long long)ts, extra, note ? " " : "", note ? note : "");
 +}
@@ -126,7 +126,7 @@ index 89bdb02..46641dd 100644
 +    const bool sleepon = !(powertx & 2);
 +    // what the power-down request then does: W_POWERDOWNCTRL bit0 inhibits it (UpdatePowerStatus)
 +    const char* effect = !powerdown ? "stays on" : ((powerdownctrl & 1) ? "power-down requested, inhibited by PowerDownCtrl bit0" : "auto power-down");
-+    Log(LogLevel::Info, "[diag] IRQ13: ModeWEP=%04X (mode %d) PowerTX=%d PowerDownCtrl=%d IsMP=%d IsMPClient=%d (%s) BSSID=%s%s -> %s"
++    Log(LogLevel::Debug, "[diag] IRQ13: ModeWEP=%04X (mode %d) PowerTX=%d PowerDownCtrl=%d IsMP=%d IsMPClient=%d (%s) BSSID=%s%s -> %s"
 +        " (D rule; 1.1 would %s, 906e9eb would %s)\n",
 +        modewep, mode, powertx & 3, powerdownctrl & 3, ismp, ismpclient,
 +        (ismp && !ismpclient) ? "MP host" : (ismpclient ? "MP client" : "not in MP"),
@@ -143,7 +143,7 @@ index 89bdb02..46641dd 100644
  
          ScheduleTimer(true);
  
-+        Log(LogLevel::Info, "[diag] wifi powered on: MP_Begin\n");
++        Log(LogLevel::Debug, "[diag] wifi powered on: MP_Begin\n");
          Platform::MP_Begin(NDS.UserData);
      }
      else
@@ -151,7 +151,7 @@ index 89bdb02..46641dd 100644
  
          NDS.CancelEvent(Event_Wifi);
  
-+        Log(LogLevel::Info, "[diag] wifi powered off: MP_End\n");
++        Log(LogLevel::Debug, "[diag] wifi powered off: MP_End\n");
          Platform::MP_End(NDS.UserData);
      }
  }
@@ -166,7 +166,7 @@ index 89bdb02..46641dd 100644
 -    // countdown (armed at 0xFFFF = ~67s) would turn the transceiver off
 -    // with nothing ever waking it up again
 -    if ((IOPORT(W_ModeWEP) & 0x7) == 0)
-+    // [BananaDS LAN test D] auto power-down at IRQ13 (the post-beacon countdown reaching 0), if W_POWER_TX bit1
++    // auto power-down at IRQ13 (the post-beacon countdown reaching 0), if W_POWER_TX bit1
 +    // (auto sleep) is clear and:
 +    // * not mode 3 (manual power management: POWERSTATE; melonDS 1.1 and 906e9eb agree)
 +    // * not while this console is a local MP host (a parent beaconing: IsMP && !IsMPClient). Mario Kart DS's
@@ -204,7 +204,7 @@ index 89bdb02..46641dd 100644
 +    if (CurChannel == 0)
 +    {
 +        if (diag::Allow(diag::RTxNoChan, 5, "TX no channel"))
-+            Log(LogLevel::Info, "[diag] TX slot %d dropped: CurChannel is 0\n", num);
++            Log(LogLevel::Debug, "[diag] TX slot %d dropped: CurChannel is 0\n", num);
 +        return;
 +    }
      TXBuffer[9] = CurChannel;
@@ -237,10 +237,10 @@ index 89bdb02..46641dd 100644
      ComStatus |= 1;
  }
  
-+// [BananaDS LAN test B] a non-beacon frame CheckRX took that FinishRX's address/BSSID/RXFILTER checks then drop
++// [diag] a non-beacon frame CheckRX took that FinishRX's address/BSSID/RXFILTER checks then drop
 +#define DIAG_RXDROP() do { \
 +        if (diag::Class(&RXBuffer[12]) != 3 && diag::Allow(diag::RRxDrop, 20, "RX dropped")) \
-+            Log(LogLevel::Info, "[diag] RX dropped by FinishRX (Wifi.cpp:%d) %s fc=%04X dst=%s src=%s a3=%s mymac=%s bssid=%s rxfilter=%04X rxfilter2=%04X\n", \
++            Log(LogLevel::Debug, "[diag] RX dropped by FinishRX (Wifi.cpp:%d) %s fc=%04X dst=%s src=%s a3=%s mymac=%s bssid=%s rxfilter=%04X rxfilter2=%04X\n", \
 +                __LINE__, diag::Kind(&RXBuffer[12]), *(u16*)&RXBuffer[12], diag::Mac(&RXBuffer[12+4]).S, diag::Mac(&RXBuffer[12+10]).S, \
 +                diag::Mac(&RXBuffer[12+16]).S, diag::Mac((u8*)&IOPORT(W_MACAddr0)).S, diag::Mac((u8*)&IOPORT(W_BSSID0)).S, \
 +                IOPORT(W_RXFilter), IOPORT(W_RXFilter2)); \
@@ -390,11 +390,11 @@ index 89bdb02..46641dd 100644
          SetIRQ(0);
 +
 +        if (diag::Class(&RXBuffer[12]) == 0 && diag::Allow(diag::RRxOk, 30, "RX delivered"))
-+            Log(LogLevel::Info, "[diag] RX delivered to the game: %s src=%s rxflags=%04X\n",
++            Log(LogLevel::Debug, "[diag] RX delivered to the game: %s src=%s rxflags=%04X\n",
 +                diag::Kind(&RXBuffer[12]), diag::Mac(&RXBuffer[12+10]).S, rxflags);
      }
 +    else if (diag::Allow(diag::RRxDrop, 20, "RX dropped"))
-+        Log(LogLevel::Info, "[diag] RX MP-CMD duplicate seqno %d ignored\n", seqno >> 4);
++        Log(LogLevel::Debug, "[diag] RX MP-CMD duplicate seqno %d ignored\n", seqno >> 4);
  
      if ((rxflags & 0x800F) == 0x800C)
      {
@@ -403,7 +403,7 @@ index 89bdb02..46641dd 100644
              // TODO: also send this if we have RX disabled
  
 +            if (diag::Allow(diag::TxRates[1], 10, "TX MP"))
-+                Log(LogLevel::Info, "[diag] TX MP-REPLY blank (AID=%d, clientmask=%04X) ts=%llu\n",
++                Log(LogLevel::Debug, "[diag] TX MP-REPLY blank (AID=%d, clientmask=%04X) ts=%llu\n",
 +                    IOPORT(W_AIDLow), clientmask, (unsigned long long)USTimestamp);
              Platform::MP_SendReply(nullptr, 0, USTimestamp, 0, NDS.UserData);
          }
@@ -413,7 +413,7 @@ index 89bdb02..46641dd 100644
              if (rxlen < 0)
              {
 +                if (diag::Allow(diag::RHostGone, 5, "host gone"))
-+                    Log(LogLevel::Info, "[diag] MP_RecvHostPacket: host is gone (-1), leaving MP\n");
++                    Log(LogLevel::Debug, "[diag] MP_RecvHostPacket: host is gone (-1), leaving MP\n");
                  // host is gone
                  // TODO: make this more resilient
                  IsMP = false;
@@ -432,7 +432,7 @@ index 89bdb02..46641dd 100644
      USTimestamp += kTimerInterval;
  
 +    {
-+        // [BananaDS LAN test B] MP state, ComStatus, AID and BSSID changes
++        // [diag] MP state, ComStatus, AID and BSSID changes
 +        static int lastmp = -1;
 +        static u32 lastcom = 0xFFFFFFFF;
 +        static u32 lastaid = 0xFFFFFFFF;
@@ -440,7 +440,7 @@ index 89bdb02..46641dd 100644
 +        int mp = (IsMP ? 1 : 0) | (IsMPClient ? 2 : 0);
 +        if (mp != lastmp)
 +        {
-+            Log(LogLevel::Info, "[diag] MP state: IsMP=%d IsMPClient=%d (was %d/%d) USTimestamp=%llu NextSync=%llu AID=%d\n",
++            Log(LogLevel::Debug, "[diag] MP state: IsMP=%d IsMPClient=%d (was %d/%d) USTimestamp=%llu NextSync=%llu AID=%d\n",
 +                mp & 1, (mp >> 1) & 1, lastmp < 0 ? -1 : (lastmp & 1), lastmp < 0 ? -1 : ((lastmp >> 1) & 1),
 +                (unsigned long long)USTimestamp, (unsigned long long)NextSync, IOPORT(W_AIDLow));
 +            lastmp = mp;
@@ -448,20 +448,20 @@ index 89bdb02..46641dd 100644
 +        if (ComStatus != lastcom)
 +        {
 +            if (diag::Allow(diag::RCom, 10, "ComStatus"))
-+                Log(LogLevel::Info, "[diag] ComStatus %u -> %u (IsMP=%d IsMPClient=%d TXCurSlot=%d)\n",
++                Log(LogLevel::Debug, "[diag] ComStatus %u -> %u (IsMP=%d IsMPClient=%d TXCurSlot=%d)\n",
 +                    lastcom, ComStatus, IsMP, IsMPClient, TXCurSlot);
 +            lastcom = ComStatus;
 +        }
 +        u32 aid = IOPORT(W_AIDLow) | ((u32)IOPORT(W_AIDFull) << 16);
 +        if (aid != lastaid)
 +        {
-+            Log(LogLevel::Info, "[diag] AID: AIDLow=%d AIDFull=%04X\n", IOPORT(W_AIDLow), IOPORT(W_AIDFull));
++            Log(LogLevel::Debug, "[diag] AID: AIDLow=%d AIDFull=%04X\n", IOPORT(W_AIDLow), IOPORT(W_AIDFull));
 +            lastaid = aid;
 +        }
 +        u64 bss = (u64)IOPORT(W_BSSID0) | ((u64)IOPORT(W_BSSID1) << 16) | ((u64)IOPORT(W_BSSID2) << 32);
 +        if (bss != lastbss)
 +        {
-+            Log(LogLevel::Info, "[diag] BSSID: %s (own MAC %s)\n", diag::Mac((u8*)&IOPORT(W_BSSID0)).S,
++            Log(LogLevel::Debug, "[diag] BSSID: %s (own MAC %s)\n", diag::Mac((u8*)&IOPORT(W_BSSID0)).S,
 +                diag::Mac((u8*)&IOPORT(W_MACAddr0)).S);
 +            lastbss = bss;
 +        }
@@ -478,7 +478,7 @@ index 0f43803..f525386 100644
  
  const u32 kLocalhost = 0x0100007F;
  
-+// [BananaDS LAN test B] diagnostics: Info level, "[diag] LAN" prefix, rate-limited
++// BananaDS diagnostics: Debug level (BananaDS log.level 0), "[diag] LAN" prefix, rate-limited
 +namespace landiag
 +{
 +struct Rate { u64 Start; int N; int Held; };
@@ -495,7 +495,7 @@ index 0f43803..f525386 100644
 +    if (r.Start == 0 || (now - r.Start) >= 1000)
 +    {
 +        if (r.Held)
-+            Platform::Log(Platform::LogLevel::Info, "[diag] LAN (%s: %d more lines not shown in the last second)\n", cat, r.Held);
++            Platform::Log(Platform::LogLevel::Debug, "[diag] LAN (%s: %d more lines not shown in the last second)\n", cat, r.Held);
 +        r.Start = now; r.N = 0; r.Held = 0;
 +    }
 +    if (r.N < max) { r.N++; return true; }
@@ -533,7 +533,7 @@ index 0f43803..f525386 100644
 +    if (!kind) return; // beacon
 +    if (!Allow(r, 30, dir)) return;
 +    const u8* h = &pkt[12];
-+    Platform::Log(Platform::LogLevel::Info,
++    Platform::Log(Platform::LogLevel::Debug,
 +        "[diag] LAN %s %s fc=%02X%02X dst=%02X:%02X:%02X:%02X:%02X:%02X src=%02X:%02X:%02X:%02X:%02X:%02X ch=%d len=%d ret=%d ts=%llu me=%d sender=%d connected=%04X\n",
 +        dir, kind, h[1], h[0], h[4], h[5], h[6], h[7], h[8], h[9], h[10], h[11], h[12], h[13], h[14], h[15],
 +        pkt[9], len, ret, (unsigned long long)ts, me, sender, connected);
@@ -549,7 +549,7 @@ index 0f43803..f525386 100644
  
 +    if (ConnectedBitmask != landiag::LastBitmask)
 +    {
-+        Platform::Log(Platform::LogLevel::Info, "[diag] LAN ConnectedBitmask %04X -> %04X (me=%d, host=%d, last MP host=%d)\n",
++        Platform::Log(Platform::LogLevel::Debug, "[diag] LAN ConnectedBitmask %04X -> %04X (me=%d, host=%d, last MP host=%d)\n",
 +            landiag::LastBitmask, ConnectedBitmask, MyPlayer.ID, IsHost ? 1 : 0, LastHostID);
 +        landiag::LastBitmask = ConnectedBitmask;
 +    }
@@ -560,7 +560,7 @@ index 0f43803..f525386 100644
 +        {
 +            if (landiag::NSendPkt || landiag::NSendCmd || landiag::NSendReply || landiag::NSendAck ||
 +                landiag::NRecvPkt || landiag::NRecvHost || landiag::NHostTimeout)
-+                Platform::Log(Platform::LogLevel::Info,
++                Platform::Log(Platform::LogLevel::Debug,
 +                    "[diag] LAN last %llu ms: sent pkt=%d cmd=%d reply=%d ack=%d; got pkt=%d host=%d; host-wait timeouts=%d; connected=%04X\n",
 +                    (unsigned long long)(now - landiag::CountStart), landiag::NSendPkt, landiag::NSendCmd, landiag::NSendReply,
 +                    landiag::NSendAck, landiag::NRecvPkt, landiag::NRecvHost, landiag::NHostTimeout, ConnectedBitmask);
@@ -577,7 +577,7 @@ index 0f43803..f525386 100644
      LastHostID = -1;
      LastHostPeer = nullptr;
  
-+    Platform::Log(Platform::LogLevel::Info, "[diag] LAN Begin: PlayerConnect broadcast (me=%d, connected=%04X)\n",
++    Platform::Log(Platform::LogLevel::Debug, "[diag] LAN Begin: PlayerConnect broadcast (me=%d, connected=%04X)\n",
 +        MyPlayer.ID, ConnectedBitmask);
      u8 cmd = Cmd_PlayerConnect;
      ENetPacket* pkt = enet_packet_create(&cmd, 1, ENET_PACKET_FLAG_RELIABLE);
@@ -586,7 +586,7 @@ index 0f43803..f525386 100644
  
      ConnectedBitmask &= ~(1 << MyPlayer.ID);
  
-+    Platform::Log(Platform::LogLevel::Info, "[diag] LAN End: PlayerDisconnect broadcast (me=%d, connected=%04X)\n",
++    Platform::Log(Platform::LogLevel::Debug, "[diag] LAN End: PlayerDisconnect broadcast (me=%d, connected=%04X)\n",
 +        MyPlayer.ID, ConnectedBitmask);
      u8 cmd = Cmd_PlayerDisconnect;
      ENetPacket* pkt = enet_packet_create(&cmd, 1, ENET_PACKET_FLAG_RELIABLE);
@@ -648,7 +648,7 @@ index 0f43803..f525386 100644
          if (!(ConnectedBitmask & (1<<LastHostID)))
 +        {
 +            if (landiag::Allow(landiag::RGone, 5, "host gone"))
-+                Platform::Log(Platform::LogLevel::Info, "[diag] LAN RecvHostPacket: host %d not in ConnectedBitmask %04X -> -1\n",
++                Platform::Log(Platform::LogLevel::Debug, "[diag] LAN RecvHostPacket: host %d not in ConnectedBitmask %04X -> -1\n",
 +                    LastHostID, ConnectedBitmask);
              return -1;
 +        }

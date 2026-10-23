@@ -54,7 +54,7 @@ index edf7b03..252d179 100644
 +    u8 cmd = Cmd_PlayerConnect;
 +    ENetPacket* pkt = enet_packet_create(&cmd, 1, ENET_PACKET_FLAG_RELIABLE);
 +    enet_peer_send(peer, Chan_Cmd, pkt);
-+    Platform::Log(Platform::LogLevel::Info, "[diag] LAN our wifi is on: told player %d, who just joined (%s)\n", id, why);
++    Platform::Log(Platform::LogLevel::Debug, "[diag] LAN our wifi is on: told player %d, who just joined (%s)\n", id, why);
 +}
 +
  void LAN::MPSetActive(int id, bool on, const char* why)
