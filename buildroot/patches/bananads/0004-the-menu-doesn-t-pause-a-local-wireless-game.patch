@@ -1,0 +1,446 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: BananaDS <bananads@localhost>
+Subject: [PATCH] BananaDS: the menu doesn't pause a local wireless game
+
+During a local wireless game (Emu::mp_active) opening the in-game menu no longer pauses the emulator: the
+other players would otherwise stall or drop out of the race. While the menu is open the game gets neutral
+input (no buttons, no touch), the frame behind the menu stays frozen, the game's sound plays at
+kms.menu_live_volume (50%) and the header says RUNNING. Save, Load, Restart game and Cheats are off (and the
+frontend refuses them while the game runs). If the session ends with the menu open (3 s without a local game,
+so the wifi toggle between races doesn't count) the game pauses then and the menu becomes the normal one.
+3D-effect changes made from the menu are handed to the emulator's thread. kms.menu_live=off keeps the old
+pausing menu.
+---
+ bananads/docs/SETTINGS.md     |   4 +-
+ bananads/src/alsa.cpp         |  15 ++++-
+ bananads/src/frontend.h       |   1 +
+ bananads/src/frontend_kms.cpp | 118 ++++++++++++++++++++++++++++++----
+ bananads/src/menu.c           |  32 +++++++--
+ bananads/src/menu.h           |  10 ++-
+ 6 files changed, 157 insertions(+), 23 deletions(-)
+
+diff --git a/bananads/docs/SETTINGS.md b/bananads/docs/SETTINGS.md
+index 95e3e3b..cd49df4 100644
+--- a/bananads/docs/SETTINGS.md
++++ b/bananads/docs/SETTINGS.md
+@@ -104,7 +104,9 @@ key can also come from the environment as `BANANADS_<KEY>` (dots become undersco
+ | `sdl.refresh` | `60` | the presents per second with `sdl.vsync=off` (the display's refresh: the RG DS Plus's panels run at 60.003 Hz) |
+ | `kms.top` | `$BANANADS_TOP`, else `DSI-2` | the connector of the panel that shows the top screen; the other connected panel of the same type shows the bottom one (`Virtual-2` in QEMU) |
+ | `kms.touch` | `$BANANADS_TOUCH`, else `fe5e0000.i2c` | the bottom panel's touchscreen: the input device whose sysfs path contains this |
+-| `kms.menu` | `on` | the in-game menu (src/menu.c: SuperDrastic's, in BananaOS's colours): L3 pauses the game and opens it on both panels. Resume, Save and Load (8 slots with pictures; a load can be undone), Quick settings (volume, brightness, the microphone's meter and a blow), Restart game, Quit game; in a local wireless game (`wifi.local`, another handheld in it) Save, Load and Restart game are off, as are F + R / F + L. `kms.menu_test=<n>` opens it 3 s in, on the main page (1), Save (2), Load (3), Quick settings (4) or the quit question (5), for tests |
++| `kms.menu` | `on` | the in-game menu (src/menu.c: SuperDrastic's, in BananaOS's colours): L3 pauses the game and opens it on both panels. Resume, Save and Load (8 slots with pictures; a load can be undone), Quick settings (volume, brightness, the microphone's meter and a blow), Restart game, Quit game; in a local wireless game (`wifi.local`, another handheld in it) the game keeps running behind the menu (`kms.menu_live`) and Save, Load, Restart game and Cheats are off, as are F + R / F + L. `kms.menu_test=<n>` opens it 3 s in, on the main page (1), Save (2), Load (3), Quick settings (4) or the quit question (5), for tests |
++| `kms.menu_live` | `on` | in a local wireless game the menu opens over the running game instead of pausing it (a paused handheld stops answering and the others drop it): the game gets no buttons and no touch, the top screen behind the menu keeps the frame from the moment it opened, the sound goes on; Resume, Quick settings and Quit game work, the rest is off. Once the local game has been over for 3 s the game pauses and the menu is the usual one. `off`: the menu pauses, as before |
++| `kms.menu_live_volume` | `50` | the game's sound while the menu is open over it, in % (100: unchanged) |
+ | `kms.queue` | `2` | the most finished frames waiting for the screen (1-3); past that the oldest is dropped. Frames are committed one per refresh, so a game whose frames take 19 and 12 ms in turn still shows a new one at every refresh |
+ | `kms.rt` | `on` | the presenter (the thread that commits the frames) at `SCHED_FIFO` 5, below the sound thread, as SuperDrastic's: a late wake-up finds the last flip still pending and the frame waits a refresh |
+ | `kms.stats` | `0` | every this many frames shown, log the rate of new frames on the panels, the frames emulated per second, the refreshes that showed no new frame and the frames dropped |
+diff --git a/bananads/src/alsa.cpp b/bananads/src/alsa.cpp
+index c2925a1..0e1b78e 100644
+--- a/bananads/src/alsa.cpp
++++ b/bananads/src/alsa.cpp
+@@ -32,6 +32,7 @@ struct Alsa {
+     Emu* emu;
+     std::atomic<bool> run{true};
+     std::atomic<bool> mute{false};  // alsa_mute: the game's sound faded to silence (the menu's sounds still play)
++    std::atomic<float> duck{1.f};   // alsa_duck: the game's sound lowered to this (the menu over a running game)
+     std::thread out, in;
+     std::string out_dev, in_dev;
+     unsigned latency_us;
+@@ -263,9 +264,10 @@ static void out_thread(Alsa* a) {
+                 st_min = st_max = skew; st_sum = st_back = 0;
+             }
+         }
+-        // muted (fast-forward): faded over ~5 ms each way, so neither end clicks
+-        const float target = a->mute.load(std::memory_order_relaxed) ? 0.f : 1.f;
+-        if (gain != target || target == 0.f)
++        // muted (fast-forward): faded over ~5 ms each way, so neither end clicks; lowered (the menu over a running
++        // game) the same way
++        const float target = a->mute.load(std::memory_order_relaxed) ? 0.f : a->duck.load(std::memory_order_relaxed);
++        if (gain != target || target != 1.f)  // (held at a level under 1 every sample is scaled)
+             for (int i = 0; i < n; i++) {
+                 gain = target > gain ? std::min(target, gain + 1.f / 240) : std::max(target, gain - 1.f / 240);
+                 buf[i * 2] = (int16_t)(buf[i * 2] * gain);
+@@ -351,6 +353,13 @@ void alsa_mute(Alsa* a, bool on) {
+     Log(LogLevel::Info, "[alsa] game sound %s\n", on ? "faded out (fast-forward)" : "back");
+ }
+ 
++void alsa_duck(Alsa* a, float level) {
++    if (!a) return;
++    level = std::clamp(level, 0.f, 1.f);
++    if (a->duck.exchange(level) == level) return;
++    Log(LogLevel::Info, "[alsa] game sound at %d%%%s\n", (int)std::lround(level * 100), level < 1.f ? " (the menu is open)" : "");
++}
++
+ void alsa_stop(Alsa* a) {
+     if (!a) return;
+     a->run = false;
+diff --git a/bananads/src/frontend.h b/bananads/src/frontend.h
+index f33fb1f..47294ad 100644
+--- a/bananads/src/frontend.h
++++ b/bananads/src/frontend.h
+@@ -30,6 +30,7 @@ void alsa_ui_load(Alsa* a, int id, const int16_t* pcm, int frames, int rate, int
+ void alsa_ui_play(Alsa* a, int id);
+ void alsa_stop(Alsa* a);
+ void alsa_mute(Alsa* a, bool on);  // the game's sound faded out (fast-forward: sped-up sound is chopped noise), or back
++void alsa_duck(Alsa* a, float level);  // the game's sound at this level (0-1): lowered under the menu over a running game
+ #endif
+ 
+ }  // namespace bananads
+diff --git a/bananads/src/frontend_kms.cpp b/bananads/src/frontend_kms.cpp
+index 2ba24d7..a953f55 100644
+--- a/bananads/src/frontend_kms.cpp
++++ b/bananads/src/frontend_kms.cpp
+@@ -828,9 +828,16 @@ struct MenuHost {
+     Emu* emu = nullptr;
+     std::vector<InputDev>* devs = nullptr;
+     Alsa* snd = nullptr;
++    GovFeed* feed = nullptr;
+     std::string rom;
+     std::deque<bmenu_ev> q;
+     bool quit = false;
++    // kms.menu_live: in a local wireless game the game keeps running behind the menu (live). Everything here runs on
++    // the presenter's thread (the menu's); the emulator's thread only sees the atomics it already reads (in_keys,
++    // in_touch, g_ff, g_fx_req) and the pause handshake (pause_game)
++    bool live = false;
++    long long calm_since = 0;           // live, and no local wireless game since then (us)
++    std::function<bool()> pause_game;   // the game paused at its next frame's end (false: it didn't stop within 2 s)
+ };
+ 
+ static int menu_key(int code) {
+@@ -869,6 +876,9 @@ static void mh_show(void* c, int panel, int k) {
+ static int mh_grab_top(void* c, uint32_t* dst, int pitch, int w, int h) { return ((MenuHost*)c)->dp->grab_top(dst, pitch, w, h); }
+ static int mh_poll(void* c, bmenu_ev* out) {
+     MenuHost* m = (MenuHost*)c;
++    // the governor counts the frames the game makes (the presenter's loop does it, and it's in the menu now): a game
++    // running behind the menu isn't taken for a slow one
++    if (m->feed) m->feed->frames = m->dp->made.load();
+     if (m->q.empty()) {
+         if (g_quit) m->q.push_back({BM_EV_KEY, BM_START, 1, 0, 0});  // shutting down: the menu closes, the game saves
+         for (auto& d : *m->devs) {
+@@ -928,11 +938,20 @@ static int mh_battery(void*, int* charging) {
+     *charging = !strncmp(st, "Charging", 8) || !strncmp(st, "Full", 4);
+     return pct;
+ }
++// (Save, Load, Restart game and Cheats are off in the menu while the game runs behind it; and here too: none of them
++// may touch the emulator from this thread while its own runs)
++static bool refused(void* c, const char* what) {
++    if (!((MenuHost*)c)->live) return false;
++    Log(LogLevel::Warn, "[menu] %s refused: the game is running behind the menu\n", what);
++    return true;
++}
+ static int mh_save(void* c, int slot) {
++    if (refused(c, "save")) return -1;
+     cpugov_boost(3000);
+     return ((MenuHost*)c)->emu->save_state(slot) ? 0 : -1;
+ }
+ static int mh_load(void* c, int slot) {
++    if (refused(c, "load")) return -1;
+     cpugov_boost(3000);
+     return ((MenuHost*)c)->emu->load_state(slot) ? 0 : -1;
+ }
+@@ -942,7 +961,29 @@ static void mh_state_file(void* c, int slot, char* out, int n) {
+ static void mh_quit(void* c) { ((MenuHost*)c)->quit = true; }
+ // a local wireless game on (Emu::mp_active): the menu's Save, Load and Restart game are off
+ static int mh_mp_lock(void* c) { return ((MenuHost*)c)->emu->mp_active() ? 1 : 0; }
++// the game running behind the menu (bmenu_host's live), asked every 250 ms: once the local wireless game has been over
++// for 3 s (not just between two races' wifi off and on), the game is paused as any menu pauses it, and the menu goes
++// on as the usual one
++static int mh_live(void* c) {
++    MenuHost* m = (MenuHost*)c;
++    if (!m->live) return 0;
++    const long long t = now_us();
++    if (m->emu->mp_active()) {
++        m->calm_since = 0;
++        return 1;
++    }
++    if (!m->calm_since) m->calm_since = t;
++    if (t - m->calm_since < 3000000) return 1;
++    if (!m->pause_game || !m->pause_game()) return 1;  // (the emulator's thread didn't stop: still live, all still off)
++    m->live = false;
++#ifdef BANANADS_ALSA
++    alsa_duck(m->snd, 1.f);
++#endif
++    Log(LogLevel::Info, "[kms] menu: the local wireless game is over, the game paused behind the menu\n");
++    return 0;
++}
+ static void mh_restart(void* c) {
++    if (refused(c, "restart")) return;
+     cpugov_boost(2000);
+     ((MenuHost*)c)->emu->restart();
+     ra_reset();
+@@ -1014,6 +1055,9 @@ struct MenuOpts {
+     int ff_speed = 2;  // kms.ff_speed: fast-forward's speed when the hotkey turns it on (2, 3 or 99, Max)
+ };
+ static MenuOpts g_opts;
++// the 3D effects chosen in the menu (bit 0 edge marking, bit 1 fog), for the emulator's thread to apply before its next
++// frame (the menu may be open over a running game); -1: nothing new
++static std::atomic<int> g_fx_req{-1};
+ static void opts_init(const Config& cfg, Display& dp) {
+     MenuOpts& o = g_opts;
+     o.shaders = {"none"};
+@@ -1089,9 +1133,7 @@ static void mh_opt_set(void* c, int i, int v) {
+         if (v < 0 || v > 3) return;
+         g_opts.edge = v == 0 || v == 1;
+         g_opts.fog = v == 0 || v == 2;
+-#ifdef BANANADS_GENGIS
+-        GengisRenderer3D::SetEffects(g_opts.edge, g_opts.fog);
+-#endif
++        g_fx_req = (g_opts.edge ? 1 : 0) | (g_opts.fog ? 2 : 0);  // (applied by the emulator's thread)
+         save_opt("render.edge_marking", g_opts.edge ? "on" : "off");
+         save_opt("render.fog", g_opts.fog ? "on" : "off");
+     }
+@@ -1102,7 +1144,8 @@ static Emu* g_cheat_emu;
+ static int mh_cheat_count(void*) { return g_cheats.count(); }
+ static const char* mh_cheat_name(void*, int i) { return i >= 0 && i < g_cheats.count() ? g_cheats.name(i).c_str() : ""; }
+ static int mh_cheat_get(void*, int i) { return i >= 0 && i < g_cheats.count() && g_cheats.on(i); }
+-static void mh_cheat_set(void*, int i, int on) {
++static void mh_cheat_set(void* c, int i, int on) {
++    if (refused(c, "a cheat's change")) return;
+     g_cheats.set(i, on != 0);
+     if (g_cheat_emu) g_cheat_emu->set_cheats(g_cheats.list());
+     Log(LogLevel::Info, "[cheats] %s: %s\n", mh_cheat_name(nullptr, i), on ? "on" : "off");
+@@ -1188,10 +1231,15 @@ int run_kms(Emu& emu, const Config& cfg) {
+     std::condition_variable pcv;
+     std::atomic<bool> pause_req{false};
+     bool paused = false;
++    // kms.menu_live (on): in a local wireless game the menu opens over the running game instead of pausing it (a paused
++    // handheld stops answering and the others drop it); kms.menu_live_volume (50): the game's sound meanwhile, in %
++    const bool menu_live = cfg.flag("kms.menu_live", true);
++    const float menu_live_vol = std::clamp((float)cfg.num("kms.menu_live_volume", 50), 0.f, 100.f) / 100.f;
+     MenuHost mh;
+     mh.dp = &dp;
+     mh.emu = &emu;
+     mh.devs = &devs;
++    mh.feed = &feed;
+ #ifdef BANANADS_ALSA
+     mh.snd = snd;
+ #endif
+@@ -1219,6 +1267,7 @@ int run_kms(Emu& emu, const Config& cfg) {
+         h.quit = mh_quit;
+         h.restart = mh_restart;
+         h.mp_lock = mh_mp_lock;
++        h.live = mh_live;
+         h.blow = mh_blow;
+         h.mic_meter = mh_mic_meter;
+         h.sound_load = mh_sound_load;
+@@ -1315,6 +1364,10 @@ int run_kms(Emu& emu, const Config& cfg) {
+                     }
+                 }
+             }
++#ifdef BANANADS_GENGIS
++            if (const int fx = g_fx_req.exchange(-1, std::memory_order_acq_rel); fx >= 0)  // the menu's 3D effects
++                GengisRenderer3D::SetEffects(fx & 1, fx & 2);
++#endif
+             if (const int f = g_ff.load(std::memory_order_relaxed); f != ff) {
+                 ff = f;
+                 pace.set_speed(ff ? ff : 1);  // (Max: 99 times as often, i.e. no wait at all in practice)
+@@ -1378,22 +1431,65 @@ int run_kms(Emu& emu, const Config& cfg) {
+     const long menu_test = cfg.num("kms.menu_test", 0);  // (tests: the menu opens 3 s in, on page menu_test - 1)
+     const long long t_start = now_us();
+     bool menu_tested = false;
++    // the game paused at its next frame's end (the emulator's thread then only keeps the LAN link up); false: it didn't
++    // stop within 2 s, or it has ended. Presenter's thread (here, and the menu's mh_live)
++    auto pause_game = [&]() -> bool {
++        std::unique_lock<std::mutex> l(pm);
++        pause_req = true;
++        if (!pcv.wait_for(l, std::chrono::seconds(2), [&] { return paused || !run.load(); }) || !run.load()) {
++            pause_req = false;
++            return false;
++        }
++        return true;
++    };
++    mh.pause_game = pause_game;
+     auto open_menu = [&](int start) {
+-        {
+-            std::unique_lock<std::mutex> l(pm);
+-            pause_req = true;
+-            if (!pcv.wait_for(l, std::chrono::seconds(2), [&] { return paused || !run.load(); }) || !run.load()) {
+-                pause_req = false;
+-                return;
++        // kms.menu_live: a local wireless game keeps running behind the menu, with no buttons and no touch from the
++        // player (the menu reads the input meanwhile; the lid stays as it is); the panels show the menu, its top
++        // screen over the frame from the moment it opened, while the game's new frames go on into the queue unseen
++        // (Display::publish drops the oldest; the slot on screen is never written). Its sound goes on, lowered
++        const bool live = menu_live && emu.mp_active();
++        if (live) {
++            keys = 0;
++            hot = false;
++            in_keys = 0;
++            in_touch = -1;
++            if (ff_held) {  // (R2's release will go to the menu)
++                ff_held = false;
++                g_ff = 0;
+             }
+-        }
++            Log(LogLevel::Info, "[kms] menu: a local wireless game, it keeps running behind the menu\n");
++        } else if (!pause_game())
++            return;
++        // the game's last flip done (the menu's commits are blocking ones; nothing else commits while it is open)
+         for (int i = 0; i < 10 && dp.pending; i++) {
+             pollfd p{dp.fd, POLLIN, 0};
+             if (poll(&p, 1, 50) > 0) drmHandleEvent(dp.fd, &ev);
+         }
+         mh.quit = false;
+         mh.q.clear();
++        mh.live = live;
++        mh.calm_since = 0;
++#ifdef BANANADS_ALSA
++        if (live) alsa_duck(snd, menu_live_vol);
++#endif
++        // kms.rt: the menu's drawing doesn't need the presenter's real-time priority, and a running game's threads
++        // shouldn't wait behind it
++        sched_param sp_other{}, sp_rt{};
++        sp_rt.sched_priority = 5;
++        if (live && rt) pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp_other);
+         bmenu_run(start);
++        if (live && rt) pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp_rt);
++#ifdef BANANADS_ALSA
++        alsa_duck(snd, 1.f);
++#endif
++        mh.live = false;
++        {
++            // no game frame went to the panels while the menu was open: that time isn't refreshes without a new frame
++            // (cpugov.repeats would take a menu under 2 s for late frames, the game running or not)
++            Lock l(dp.mu);
++            dp.last_flip = 0;
++        }
+         dp.show_game();
+         keys = 0;
+         hot = false;
+diff --git a/bananads/src/menu.c b/bananads/src/menu.c
+index e7e1090..9c13717 100644
+--- a/bananads/src/menu.c
++++ b/bananads/src/menu.c
+@@ -480,6 +480,12 @@ static uint32_t *bgtop;                         /* the game's top frame, dimmed
+ static canvas CV[2];
+ static int pw[2], ph[2];
+ 
++/* H.live: the game keeps running behind the menu (a local wireless game: pausing it would drop the other handhelds).
++ * Then the game's input is neutral, its picture behind the menu is the frame from the moment it opened, its sound
++ * goes on, and everything that touches the running game is off (Save, Load, Restart game, Cheats). Asked again every
++ * 250 ms: once the frontend has paused the game (the local game over), the menu is the usual paused one */
++static int live_;
++
+ /* rows of Quick settings that exist on this setup */
+ enum { ROW_VOL, ROW_BRI, ROW_MIC, ROW_CHEAT, ROW_OPT = 100 };   /* ROW_OPT + i: the emulator's option i (bmenu_host's opt_*) */
+ static int rows[8], nrows;
+@@ -639,7 +645,7 @@ static void draw_top(void) {
+     } else {
+         /* PAUSED pill, the game, its genre */
+         int cw = x1 - L - S(28);
+-        const char *paused = lang_active() ? "Paused" : "PAUSED";   /* (the translator's line is "Paused") */
++        const char *paused = live_ ? (lang_active() ? "Running" : "RUNNING") : lang_active() ? "Paused" : "PAUSED";   /* (the translator's lines are "Paused", "Running") */
+         float pwid = text_w(&F_MED, paused, S(14), 99) + S(18);
+         rrect(c, L, S(68), L + (int)pwid, S(68) + S(24), S(4), C_LIGHT, 1.0f);
+         text(c, &F_MED, paused, L + S(9), S(71), S(14), C_DARK, 0, 0);
+@@ -739,6 +745,7 @@ static const char *const IC_RESTART[12] = { "............", "....####.#..", "...
+ static int mp_locked;
+ static long long off_note_until;
+ static int tile_off(int i) { return mp_locked && (i == 1 || i == 2 || i == 4); }
++static int cheats_off(void) { return mp_locked; }   /* a code changes the game the other handhelds play with */
+ static const char *tile_label[6] = { "Resume", "Save", "Load", "Quick settings", "Restart game", "Quit game" };
+ static const char *const *tile_icon[6] = { IC_PLAY, IC_SAVE, IC_LOAD, IC_SLIDERS, IC_RESTART, IC_EXIT };
+ 
+@@ -783,8 +790,9 @@ static void draw_bottom(void) {
+     }
+     if (s == SC_MAIN) {
+         char sub[120]; snprintf(sub, sizeof sub, "%s", gtitle);
++        if (live_) snprintf(sub, sizeof sub, "%s", "The game keeps running");
+         if (off_note_until) snprintf(sub, sizeof sub, "%s", "Not during a local wireless game");
+-        draw_header(c, "Paused", sub, 0);
++        draw_header(c, live_ ? "Local wireless" : "Paused", sub, 0);
+         int gap = S(12), tw = (gx1 - gx0 - 2 * gap) / 3, th = (gy1 - gy0 - gap) / 2;
+         int nb = newest_slot();
+         for (int i = 0; i < 6; i++) {
+@@ -848,6 +856,7 @@ static void draw_bottom(void) {
+                 R_BAR[r] = (rect){ bx - S(8), y, bx + S(150), y + rh };
+                 snprintf(v, sizeof v, "%d%%", val);
+             } else if (id == ROW_MIC) snprintf(v, sizeof v, "Test / blow");
++            else if (id == ROW_CHEAT && cheats_off()) snprintf(v, sizeof v, "not in local wireless");
+             else if (id == ROW_CHEAT) {
+                 int n = H.cheat_count(H.ctx), on = 0;
+                 for (int i = 0; i < n; i++) on += H.cheat_get(H.ctx, i) != 0;
+@@ -862,7 +871,7 @@ static void draw_bottom(void) {
+         case ROW_VOL: help = "Left / right to change, or tap the bar"; break;
+         case ROW_BRI: help = "Left / right to change, both screens"; break;
+         case ROW_MIC: help = "A live meter of the mic, and a blow for games that ask for one"; break;
+-        case ROW_CHEAT: help = "Action Replay codes for this game: A to see them"; break;
++        case ROW_CHEAT: help = cheats_off() ? "Not during a local wireless game" : "Action Replay codes for this game: A to see them"; break;
+         default: help = "Left / right to change: it applies at once, and stays for the next game"; break;
+         }
+         text(c, &F_REG, help, gx0 + S(4), y + S(6), S(16), C_GREY, gx1 - gx0, 0);
+@@ -954,7 +963,7 @@ static void draw_bottom(void) {
+     int fy = c->h - S(56);
+     const char *bl = s == SC_MAIN ? "Resume" : "Back", *al = "Select", *mid = "";
+     if (s == SC_SAVE) al = "Save"; else if (s == SC_LOAD) al = "Load";
+-    else if (s == SC_SET) al = rows[sel_set] == ROW_MIC || rows[sel_set] == ROW_CHEAT ? "Open" : "OK";
++    else if (s == SC_SET) al = rows[sel_set] == ROW_MIC || (rows[sel_set] == ROW_CHEAT && !cheats_off()) ? "Open" : "OK";
+     else if (s == SC_CHEAT) al = H.cheat_count(H.ctx) ? (H.cheat_get(H.ctx, sel_cheat) ? "Turn off" : "Turn on") : "Back";
+     else if (s == SC_MIC) al = "Blow for 3 s";
+     if (s == SC_MAIN) mid = "D-pad or tap";
+@@ -1049,11 +1058,12 @@ static void activate(void) {
+     case SC_LOAD: if (SL[sel_slot].used) do_load(sel_slot); else play(SND_BACK); break;
+     case SC_SET:
+         if (rows[sel_set] == ROW_MIC) { scr = SC_MIC; play(SND_SELECT); dirty_bot = 1; }
++        else if (rows[sel_set] == ROW_CHEAT && cheats_off()) { play(SND_BACK); mlog("[menu] Cheats are off in a local wireless game\n"); }
+         else if (rows[sel_set] == ROW_CHEAT) { scr = SC_CHEAT; sel_cheat = top_cheat = 0; play(SND_SELECT); dirty_bot = 1; }
+         else play(SND_SELECT);
+         break;
+     case SC_CHEAT:
+-        if (!H.cheat_count(H.ctx)) { back(); break; }
++        if (!H.cheat_count(H.ctx) || cheats_off()) { back(); break; }
+         H.cheat_set(H.ctx, sel_cheat, !H.cheat_get(H.ctx, sel_cheat)); play(SND_SELECT); dirty_bot = 1;
+         break;
+     case SC_MIC:
+@@ -1178,7 +1188,10 @@ int bmenu_run(int start) {
+     open_ = 1; scr = SC_MAIN; sel_main = 0; held_dir = 0;
+     bri_changed = 0; make_rows();
+     mp_locked = H.mp_lock && H.mp_lock(H.ctx); off_note_until = 0;
+-    if (mp_locked) mlog("[menu] a local wireless game: Save, Load and Restart game are off\n");
++    live_ = H.live && H.live(H.ctx);
++    if (live_) mp_locked = 1;
++    if (live_) mlog("[menu] a local wireless game: the game keeps running; Save, Load, Restart game and Cheats are off\n");
++    else if (mp_locked) mlog("[menu] a local wireless game: Save, Load, Restart game and Cheats are off\n");
+     scan_slots(0);
+     load_recent();
+     grab_background();
+@@ -1195,6 +1208,13 @@ int bmenu_run(int start) {
+         { static long long vt; if (scr == SC_SET && now_ms() - vt >= 500) { vt = now_ms(); want_ex(-1, -1, 1); }   /* the volume keys' */
+           int r = vol_read; if (r >= 0) { vol_read = -1; if (scr == SC_SET && r != vol && now_ms() - vol_set_at > 1500) { vol = r; dirty_bot = 1; } } }
+         if (off_note_until && now_ms() >= off_note_until) { off_note_until = 0; dirty_bot = 1; }
++        { static long long lt; if (live_ && now_ms() - lt >= 250) { lt = now_ms();   /* the local game over: paused now */
++            if (!H.live(H.ctx)) {
++                live_ = 0; mp_locked = H.mp_lock && H.mp_lock(H.ctx); off_note_until = 0;
++                mlog(mp_locked ? "[menu] the game is paused now; Save, Load, Restart game and Cheats stay off\n"
++                               : "[menu] the local wireless game is over: the game is paused, Save, Load, Restart game and Cheats are on again\n");
++                dirty_top = dirty_bot = 1;
++            } } }
+         if (now_ms() - clock_t0 >= 15000) { clock_t0 = now_ms(); if (scr == SC_MAIN || scr == SC_SET || scr == SC_QUIT) dirty_top = 1; }   /* the clock */
+         /* RetroAchievements finishes its login and the game's lookup 10-15 s after a start: a menu opened before that
+          * had no achievements on its top screen until it was opened again. Looked at twice a second while open. */
+diff --git a/bananads/src/menu.h b/bananads/src/menu.h
+index 6a2c558..86a9424 100644
+--- a/bananads/src/menu.h
++++ b/bananads/src/menu.h
+@@ -1,6 +1,7 @@
+ // menu.h: the in-game menu (menu.c: SuperDrastic's, in BananaOS's colours) and what the frontend gives it. The
+-// frontend pauses the game and calls bmenu_run, which draws both panels and reads the input itself until the menu
+-// closes; everything it needs from the emulator and the handheld goes through bmenu_host.
++// frontend pauses the game (or, in a local wireless game, keeps it running: bmenu_host's live) and calls bmenu_run,
++// which draws both panels and reads the input itself until the menu closes; everything it needs from the emulator and
++// the handheld goes through bmenu_host.
+ #pragma once
+ #include <stdint.h>
+ 
+@@ -59,6 +60,11 @@ typedef struct {
+     // 1: a local wireless game is on (wifi.local, another handheld in it): Save, Load and Restart game are off, as a
+     // load or a restart would break it. Asked as the menu opens; unset: never
+     int (*mp_lock)(void* ctx);
++    // 1: the game keeps running behind the menu (a local wireless game), with no input from the player; Save, Load,
++    // Restart game and Cheats are off meanwhile, whatever mp_lock says. Asked as the menu opens and every 250 ms while
++    // it is open: 0 once the frontend has paused the game (the local game over), and the menu goes on as the paused
++    // one. Called on the menu's thread; unset: never
++    int (*live)(void* ctx);
+ } bmenu_host;
+ 
+ void bmenu_init(const bmenu_host* host);  // once, before the first bmenu_run
