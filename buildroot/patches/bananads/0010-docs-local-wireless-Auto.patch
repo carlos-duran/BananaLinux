@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Carlos Duran <15650777+carlos-duran@users.noreply.github.com>
+Subject: [PATCH] BananaDS docs: local wireless Auto
+
+wifi.local = auto, wifi.local_auto_start and wifi.local_auto_test_wifi in SETTINGS.md, Auto on the LAN multiplayer
+page, and the README's and PLAN.md's local wireless lines.
+---
+ bananads/docs/PLAN.md     | 2 +-
+ bananads/docs/SETTINGS.md | 8 +++++---
+ 2 files changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/bananads/docs/PLAN.md b/bananads/docs/PLAN.md
+index 41dfe40..a4bf46a 100644
+--- a/bananads/docs/PLAN.md
++++ b/bananads/docs/PLAN.md
+@@ -79,7 +79,7 @@ Mali GPUs with GLES 3.2, so neither runs as it is. The options, to choose with B
+ - **Online:** with `wifi.dns=kaeru` (or `altwfc`, `wiilink`), Mario Kart DS gets to its Nintendo WFC menu and finds
+   a race. Pokémon Platinum/HGSS reach the GTS. The setup happens in each game's Nintendo WFC settings, and needs
+   a connection made once. `log.level=0` shows every DNS query going to the WFC server.
+-- **Local:** two handhelds on one network, `wifi.local=host` and `wifi.local=join:<address>`. Mario Kart DS's
++- **Local:** two handhelds on one network, `wifi.local=host` and `wifi.local=join:<address>`, or `auto` on both. Mario Kart DS's
+   multi-card play, a Pokémon trade, PictoChat.
+ - Worth checking: whether slirp's polling costs much CPU on the A55 (it runs on the emulator's thread). If it
+   does, SuperDrastic's `wfcnet.c` is the lighter fallback.
+diff --git a/bananads/docs/SETTINGS.md b/bananads/docs/SETTINGS.md
+index 568f05d..5621c34 100644
+--- a/bananads/docs/SETTINGS.md
++++ b/bananads/docs/SETTINGS.md
+@@ -78,8 +78,10 @@ key can also come from the environment as `BANANADS_<KEY>` (dots become undersco
+ | `firmware.language` | the firmware's | 0 Japanese, 1 English, 2 French, 3 German, 4 Italian, 5 Spanish |
+ | `rtc.fixed` | none | the DS clock's start, `YYYY-MM-DD HH:MM:SS` (or `T` or `_` for the space), instead of the current time: two runs of a game that seeds its random numbers from the clock then go the same way (for tests) |
+ | `wifi.dns` | `kaeru` | `kaeru`, `altwfc`, `wiilink`, an IPv4 address, `system` (the handheld's own DNS) or `off` (no Wi-Fi at all) |
+-| `wifi.local` | `off` | local wireless with other handhelds or desktop melonDS on the same network (builds with `BANANADS_LAN`): `host` (a session others join), `join` (look for hosts; pick one in the in-game menu's LAN multiplayer page) or `join:<the host's address>` (join that host at the start). The menu's page changes it while the game runs and keeps `off`, `host` or `join` here for the next game (a join keeps `join`, not the address) |
+-| `wifi.local_players` | `4` | `host`: how many may be in the session, the host included (2-16) |
++| `wifi.local` | `off` | local wireless with other handhelds or desktop melonDS on the same network (builds with `BANANADS_LAN`): `host` (a session others join), `join` (look for hosts; pick one in the in-game menu's LAN multiplayer page), `join:<the host's address>` (join that host at the start) or `auto` (see below). The menu's page changes it while the game runs and keeps `off`, `auto`, `host` or `join` here for the next game (a join keeps `join`, not the address).<br>`auto`: nothing until the game turns its wifi on (its multiplayer menu, Download Play); then it listens for the hosts' beacons for 2-3 s and joins a host of the same game (melonDS patch 0096's tag: one hosting by hand first, else the lowest address), else a host that doesn't say its game (desktop melonDS) if no tagged one is there, else hosts. Of two that start together and both host, the one alone with the higher address joins the other once it has heard it twice. Nothing changes during a local wireless game; a player whose host leaves looks again (one of those left hosts); a game that goes online through Nintendo WFC gets no session. When the game turns its wifi off for 3 s of its own time (it left its multiplayer mode; MKDS turns it off and on for under 2 s between its screens), Auto ends or leaves its session and waits again (the others look again); the paused menu doesn't count. Every console in the room on `auto` (or one on `host`, the others on `auto`) is enough |
++| `wifi.local_players` | `4` | `host`, `auto`: how many may be in the session, the host included (2-16) |
++| `wifi.local_auto_start` | `wifi` | `auto`: `wifi` waits for the game to turn its wifi on; `now` starts at once (for tests with a game that doesn't) |
++| `wifi.local_auto_test_wifi` | (none) | `auto`, for tests: the game's wifi as a script by frame, e.g. `on@0,off@2400,on@2500` (instead of the DS's own) |
+ | `wifi.mac` | (none) | the DS's MAC (`00:09:bf:12:34:56`), over the saved one (not saved itself) |
+ | `wifi.mac_file` | `wifi-mac` | where the DS's MAC is kept (under `BANANADS_DATA`; `off`: not kept). Made once (from the eMMC's CID, else wlan0's MAC, else at random; the old 00:09:BF:11:22:33 if WFC settings were saved before it) and never changed |
+ | `wifi.wfc_settings` | `wfcsettings.bin` | where the Nintendo WFC settings the game writes (its WFC ID) are kept between sessions, melonDS's 2304-byte file (under `BANANADS_DATA`; `off`: not kept, a new WFC ID every session) |
+@@ -107,7 +109,7 @@ key can also come from the environment as `BANANADS_<KEY>` (dots become undersco
+ | `kms.menu` | `on` | the in-game menu (src/menu.c: SuperDrastic's, in BananaOS's colours): the menu button pauses the game and opens it on both panels. Resume, Save and Load (8 slots with pictures; a load can be undone), Quick settings (volume, brightness, the microphone's meter and a blow, Cheats, LAN multiplayer, the emulator's options), Restart game, Quit game; in a local wireless game (`wifi.local`, another handheld in it) the game keeps running behind the menu (`kms.menu_live`) and Save, Load, Restart game and Cheats are off, as are F + R / F + L. `kms.menu_test=<n>` opens it 3 s in, on the main page (1), Save (2), Load (3), Quick settings (4) or the quit question (5), for tests |
+ | `kms.menu_live` | `on` | in a local wireless game the menu opens over the running game instead of pausing it (a paused handheld stops answering and the others drop it): the game gets no buttons and no touch, the top screen behind the menu keeps the frame from the moment it opened, the sound goes on; Resume, Quick settings and Quit game work, the rest is off. Once the local game has been over for 3 s the game pauses and the menu is the usual one. `off`: the menu pauses, as before |
+ | `kms.menu_live_volume` | `50` | the game's sound while the menu is open over it, in % (100: unchanged) |
+-| (LAN multiplayer) | | the menu's Quick settings > LAN multiplayer page (builds with `BANANADS_LAN`): Mode Off / Host / Join, Players (2-16, 4 by default, for a host, while nobody else is in its session), Hosts found (Join: the hosts melonDS's LAN discovery hears on UDP 7063, each with its name, players and address; A joins one, the menu stays usable while it connects, up to 5 s, and says when it fails), the session's players with their ping, and Disconnect (a host's session ends, Off; a joined player goes back to looking for hosts). The mode changes without a restart while no local wireless game is on; during one only Disconnect works, after a question. The choice is kept in `wifi.local` and `wifi.local_players`; `BANANADS_WIFI_LOCAL` or `BANANADS_WIFI_LOCAL_PLAYERS` in the environment (BananaLinux: `/data/banana/bananads.env`) still win at each start, and the page says so while one is set |
++| (LAN multiplayer) | | the menu's Quick settings > LAN multiplayer page (builds with `BANANADS_LAN`): Mode Off / Auto / Host / Join, Players (2-16, 4 by default, for a host, or "Players (if hosting)" for Auto: the size of a session it hosts; while nobody else is in its session), Hosts found (Join: the hosts melonDS's LAN discovery hears on UDP 7063, each with its name, players and address; A joins one, the menu stays usable while it connects, up to 5 s, and says when it fails), the session's players with their ping, and Disconnect (a host's session ends, Off; a joined player goes back to looking for hosts; Auto ends or leaves its session and waits until the game turns its wireless off, for 3 s, and on). Auto says what it is doing: waiting for the game, looking for a host of this game, hosting, in a host's session (a desktop melonDS host said as such), the game online (WFC), or disconnected. The mode changes without a restart while no local wireless game is on; during one only Disconnect works, after a question. The choice is kept in `wifi.local` and `wifi.local_players`; `BANANADS_WIFI_LOCAL` or `BANANADS_WIFI_LOCAL_PLAYERS` in the environment (BananaLinux: `/data/banana/bananads.env`) still win at each start, and the page says so while one is set |
+ | `kms.queue` | `2` | the most finished frames waiting for the screen (1-3); past that the oldest is dropped. Frames are committed one per refresh, so a game whose frames take 19 and 12 ms in turn still shows a new one at every refresh |
+ | `kms.rt` | `on` | the presenter (the thread that commits the frames) at `SCHED_FIFO` 5, below the sound thread, as SuperDrastic's: a late wake-up finds the last flip still pending and the frame waits a refresh |
+ | `kms.stats` | `0` | every this many frames shown, log the rate of new frames on the panels, the frames emulated per second, the refreshes that showed no new frame and the frames dropped |
