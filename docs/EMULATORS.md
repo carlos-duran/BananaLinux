@@ -123,7 +123,8 @@ handhelds themselves.
   session, and one that turns its wifi off for 3 s (it left its multiplayer mode) ends its session and waits. It keeps the mode in `bananads.conf` (`wifi.local = off`, `auto`, `host` or `join`, which looks for
   hosts at the start; `wifi.local = join:<address>` joins that host directly), and `BANANADS_WIFI_LOCAL` in
   `/data/banana/bananads.env` still wins over it (the page says so). The player name is `firmware.nickname`
-  (Settings > Nintendo DS > DS name). Off by default.
+  (Settings > Nintendo DS > DS name). Without a Wi-Fi network (Settings > Network) nothing starts and the menu
+  says "No Wi-Fi"; the mode is kept and starts again when the network is back. Off by default.
 
 What the launcher (`run-bananads`) gives it: the contract's names, and the same as BananaDS's own settings (it reads
 every `BANANADS_<KEY>` as the setting `<key>`, over `/data/bananads/bananads.conf`):

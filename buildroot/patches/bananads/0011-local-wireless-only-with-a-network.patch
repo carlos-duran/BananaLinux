@@ -1,0 +1,403 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Carlos Duran <15650777+carlos-duran@users.noreply.github.com>
+Subject: [PATCH] BananaDS: local wireless only with a network
+
+Every 1 s (off the frame's path) BananaDS checks for a network to play on: an interface other than loopback that
+is up and running (on the handheld, wlan0 connected: BananaOS keeps wlan0's address after a disconnect, not its
+RUNNING flag) with an IPv4 address. Without one, Host, Join and Auto stay chosen (bananads.conf isn't touched) but
+nothing starts and no join is tried; a session ends when the network goes (the others look again, Auto's re-elect);
+when it is back, Host hosts again, Join looks for hosts and Auto starts over once the game's wifi is on. Nintendo
+WFC goes through slirp and isn't affected.
+
+The menu: Quick settings' LAN multiplayer row says "No Wi-Fi" in grey and doesn't open; an open page turns its
+Mode, Players and Hosts rows off and says to connect in BananaOS's Settings > Network.
+---
+ bananads/docs/SETTINGS.md     |   4 +-
+ bananads/src/emu.cpp          | 105 +++++++++++++++++++++++++++++++++-
+ bananads/src/emu.h            |   6 ++
+ bananads/src/frontend_kms.cpp |   1 +
+ bananads/src/menu.c           |  37 +++++++-----
+ bananads/src/menu.h           |   1 +
+ 6 files changed, 136 insertions(+), 18 deletions(-)
+
+diff --git a/bananads/docs/SETTINGS.md b/bananads/docs/SETTINGS.md
+index 5621c34..c724494 100644
+--- a/bananads/docs/SETTINGS.md
++++ b/bananads/docs/SETTINGS.md
+@@ -78,7 +78,7 @@ key can also come from the environment as `BANANADS_<KEY>` (dots become undersco
+ | `firmware.language` | the firmware's | 0 Japanese, 1 English, 2 French, 3 German, 4 Italian, 5 Spanish |
+ | `rtc.fixed` | none | the DS clock's start, `YYYY-MM-DD HH:MM:SS` (or `T` or `_` for the space), instead of the current time: two runs of a game that seeds its random numbers from the clock then go the same way (for tests) |
+ | `wifi.dns` | `kaeru` | `kaeru`, `altwfc`, `wiilink`, an IPv4 address, `system` (the handheld's own DNS) or `off` (no Wi-Fi at all) |
+-| `wifi.local` | `off` | local wireless with other handhelds or desktop melonDS on the same network (builds with `BANANADS_LAN`): `host` (a session others join), `join` (look for hosts; pick one in the in-game menu's LAN multiplayer page), `join:<the host's address>` (join that host at the start) or `auto` (see below). The menu's page changes it while the game runs and keeps `off`, `auto`, `host` or `join` here for the next game (a join keeps `join`, not the address).<br>`auto`: nothing until the game turns its wifi on (its multiplayer menu, Download Play); then it listens for the hosts' beacons for 2-3 s and joins a host of the same game (melonDS patch 0096's tag: one hosting by hand first, else the lowest address), else a host that doesn't say its game (desktop melonDS) if no tagged one is there, else hosts. Of two that start together and both host, the one alone with the higher address joins the other once it has heard it twice. Nothing changes during a local wireless game; a player whose host leaves looks again (one of those left hosts); a game that goes online through Nintendo WFC gets no session. When the game turns its wifi off for 3 s of its own time (it left its multiplayer mode; MKDS turns it off and on for under 2 s between its screens), Auto ends or leaves its session and waits again (the others look again); the paused menu doesn't count. Every console in the room on `auto` (or one on `host`, the others on `auto`) is enough |
++| `wifi.local` | `off` | local wireless with other handhelds or desktop melonDS on the same network (builds with `BANANADS_LAN`): `host` (a session others join), `join` (look for hosts; pick one in the in-game menu's LAN multiplayer page), `join:<the host's address>` (join that host at the start) or `auto` (see below). The menu's page changes it while the game runs and keeps `off`, `auto`, `host` or `join` here for the next game (a join keeps `join`, not the address).<br>`auto`: nothing until the game turns its wifi on (its multiplayer menu, Download Play); then it listens for the hosts' beacons for 2-3 s and joins a host of the same game (melonDS patch 0096's tag: one hosting by hand first, else the lowest address), else a host that doesn't say its game (desktop melonDS) if no tagged one is there, else hosts. Of two that start together and both host, the one alone with the higher address joins the other once it has heard it twice. Nothing changes during a local wireless game; a player whose host leaves looks again (one of those left hosts); a game that goes online through Nintendo WFC gets no session. When the game turns its wifi off for 3 s of its own time (it left its multiplayer mode; MKDS turns it off and on for under 2 s between its screens), Auto ends or leaves its session and waits again (the others look again); the paused menu doesn't count. Every console in the room on `auto` (or one on `host`, the others on `auto`) is enough.<br>No network (no interface other than loopback up, connected and with an IPv4 address; checked every 1 s): nothing starts and no join is tried, the mode stays as chosen (here too); a session ends when the network goes (the others look again); when it is back, `host` hosts again, `join` looks for hosts, `auto` starts over once the game's wifi is on. Nintendo WFC (slirp) isn't affected |
+ | `wifi.local_players` | `4` | `host`, `auto`: how many may be in the session, the host included (2-16) |
+ | `wifi.local_auto_start` | `wifi` | `auto`: `wifi` waits for the game to turn its wifi on; `now` starts at once (for tests with a game that doesn't) |
+ | `wifi.local_auto_test_wifi` | (none) | `auto`, for tests: the game's wifi as a script by frame, e.g. `on@0,off@2400,on@2500` (instead of the DS's own) |
+@@ -109,7 +109,7 @@ key can also come from the environment as `BANANADS_<KEY>` (dots become undersco
+ | `kms.menu` | `on` | the in-game menu (src/menu.c: SuperDrastic's, in BananaOS's colours): the menu button pauses the game and opens it on both panels. Resume, Save and Load (8 slots with pictures; a load can be undone), Quick settings (volume, brightness, the microphone's meter and a blow, Cheats, LAN multiplayer, the emulator's options), Restart game, Quit game; in a local wireless game (`wifi.local`, another handheld in it) the game keeps running behind the menu (`kms.menu_live`) and Save, Load, Restart game and Cheats are off, as are F + R / F + L. `kms.menu_test=<n>` opens it 3 s in, on the main page (1), Save (2), Load (3), Quick settings (4) or the quit question (5), for tests |
+ | `kms.menu_live` | `on` | in a local wireless game the menu opens over the running game instead of pausing it (a paused handheld stops answering and the others drop it): the game gets no buttons and no touch, the top screen behind the menu keeps the frame from the moment it opened, the sound goes on; Resume, Quick settings and Quit game work, the rest is off. Once the local game has been over for 3 s the game pauses and the menu is the usual one. `off`: the menu pauses, as before |
+ | `kms.menu_live_volume` | `50` | the game's sound while the menu is open over it, in % (100: unchanged) |
+-| (LAN multiplayer) | | the menu's Quick settings > LAN multiplayer page (builds with `BANANADS_LAN`): Mode Off / Auto / Host / Join, Players (2-16, 4 by default, for a host, or "Players (if hosting)" for Auto: the size of a session it hosts; while nobody else is in its session), Hosts found (Join: the hosts melonDS's LAN discovery hears on UDP 7063, each with its name, players and address; A joins one, the menu stays usable while it connects, up to 5 s, and says when it fails), the session's players with their ping, and Disconnect (a host's session ends, Off; a joined player goes back to looking for hosts; Auto ends or leaves its session and waits until the game turns its wireless off, for 3 s, and on). Auto says what it is doing: waiting for the game, looking for a host of this game, hosting, in a host's session (a desktop melonDS host said as such), the game online (WFC), or disconnected. The mode changes without a restart while no local wireless game is on; during one only Disconnect works, after a question. The choice is kept in `wifi.local` and `wifi.local_players`; `BANANADS_WIFI_LOCAL` or `BANANADS_WIFI_LOCAL_PLAYERS` in the environment (BananaLinux: `/data/banana/bananads.env`) still win at each start, and the page says so while one is set |
++| (LAN multiplayer) | | the menu's Quick settings > LAN multiplayer page (builds with `BANANADS_LAN`): Mode Off / Auto / Host / Join, Players (2-16, 4 by default, for a host, or "Players (if hosting)" for Auto: the size of a session it hosts; while nobody else is in its session), Hosts found (Join: the hosts melonDS's LAN discovery hears on UDP 7063, each with its name, players and address; A joins one, the menu stays usable while it connects, up to 5 s, and says when it fails), the session's players with their ping, and Disconnect (a host's session ends, Off; a joined player goes back to looking for hosts; Auto ends or leaves its session and waits until the game turns its wireless off, for 3 s, and on). With no Wi-Fi network, Quick settings' row says "No Wi-Fi" in grey and doesn't open; an open page turns its rows off and says to connect in BananaOS's Settings > Network. Auto says what it is doing: waiting for the game, looking for a host of this game, hosting, in a host's session (a desktop melonDS host said as such), the game online (WFC), or disconnected. The mode changes without a restart while no local wireless game is on; during one only Disconnect works, after a question. The choice is kept in `wifi.local` and `wifi.local_players`; `BANANADS_WIFI_LOCAL` or `BANANADS_WIFI_LOCAL_PLAYERS` in the environment (BananaLinux: `/data/banana/bananads.env`) still win at each start, and the page says so while one is set |
+ | `kms.queue` | `2` | the most finished frames waiting for the screen (1-3); past that the oldest is dropped. Frames are committed one per refresh, so a game whose frames take 19 and 12 ms in turn still shows a new one at every refresh |
+ | `kms.rt` | `on` | the presenter (the thread that commits the frames) at `SCHED_FIFO` 5, below the sound thread, as SuperDrastic's: a late wake-up finds the last flip still pending and the frame waits a refresh |
+ | `kms.stats` | `0` | every this many frames shown, log the rate of new frames on the panels, the frames emulated per second, the refreshes that showed no new frame and the frames dropped |
+diff --git a/bananads/src/emu.cpp b/bananads/src/emu.cpp
+index f13fea0..651cb9e 100644
+--- a/bananads/src/emu.cpp
++++ b/bananads/src/emu.cpp
+@@ -14,6 +14,9 @@
+ #include <fstream>
+ #include <new>
+ #include <fcntl.h>
++#include <ifaddrs.h>
++#include <net/if.h>
++#include <netinet/in.h>
+ #include <sys/mman.h>
+ #include <sys/resource.h>
+ #include <sys/stat.h>
+@@ -132,8 +135,14 @@ void Emu::setup_local() {
+         lan_st_.built = true;
+         lan_st_.max_players = (int)std::clamp(cfg_.num("wifi.local_players", 4), 2L, 16L);
+     }
++    lan_st_built_ = true;
++    lan_net_check(true);
+     if (mode == "off") return;
+-    if (mode == "host") lan_start_host(lan_status().max_players);
++    const bool manual = mode == "host" || mode == "join" || mode.rfind("join:", 0) == 0;
++    if (manual && lan_net_wait(mode == "host" ? LanMode::Host : LanMode::Join, mode.size() > 5 ? mode.substr(5) : "",
++                               lan_status().max_players))
++        ;  // (no network: it starts when there is one)
++    else if (mode == "host") lan_start_host(lan_status().max_players);
+     else if (mode == "auto") {
+         auto_on_ = true;
+         auto_read_config();
+@@ -224,6 +233,10 @@ void Emu::lan_apply() {
+     }
+     auto_on_ = false;
+     lan_stop();
++    if (r.mode != LanMode::Off && lan_net_wait(r.mode, r.addr, r.max_players)) {
++        lan_refresh(true);
++        return;
++    }
+     switch (r.mode) {
+         case LanMode::Off: {
+             Log(LogLevel::Info, "[wifi] local wireless: off\n");
+@@ -248,6 +261,87 @@ void Emu::lan_apply() {
+ }
+ 
+ #ifdef BANANADS_LAN
++// A network to play on: an interface other than loopback that is up and running (on the handheld, wlan0 connected:
++// BananaOS keeps its address after a disconnect, but not the RUNNING flag) with an IPv4 address. Its name, or "".
++static std::string usable_net() {
++    struct ifaddrs* ifs = nullptr;
++    if (getifaddrs(&ifs) != 0) return "?";  // (can't tell: taken as there, as before)
++    std::string name;
++    for (struct ifaddrs* i = ifs; i && name.empty(); i = i->ifa_next)
++        if (i->ifa_addr && i->ifa_addr->sa_family == AF_INET && (i->ifa_flags & IFF_UP) && (i->ifa_flags & IFF_RUNNING) &&
++            !(i->ifa_flags & IFF_LOOPBACK))
++            name = i->ifa_name;
++    freeifaddrs(ifs);
++    return name;
++}
++
++// Every 1 s (and at the start): no network, no local wireless. Host, Join and Auto stay chosen (bananads.conf isn't
++// touched) and wait: nothing is started, no join is tried; a session ends when the network goes (the others look
++// again). When it comes back, Host hosts again, Join looks for hosts, Auto starts over when the game's wifi is on.
++// Nintendo WFC goes through slirp, not this: untouched.
++void Emu::lan_net_check(bool now) {
++    const uint64_t t = now_us();
++    if (!now && t - net_check_us_ < 1000000) return;
++    net_check_us_ = t;
++    const std::string net = usable_net();
++    const bool ok = !net.empty();
++    if (ok == net_ok_ && !now) return;
++    const bool changed = ok != net_ok_;
++    net_ok_ = ok;
++    LanStatus st;
++    {
++        std::lock_guard<std::mutex> l(lan_mu_);
++        lan_st_.no_net = !ok;
++        st = lan_st_;
++    }
++    if (!changed) return;
++    Log(LogLevel::Info, "[wifi] local wireless: %s%s\n", ok ? "a network again: " : "no network (Wi-Fi off or not connected)",
++        ok ? net.c_str() : "");
++    if (!ok) {
++        const bool was = local_;
++        if (auto_on_) {
++            if (auto_phase_ == AutoPhase::Search || auto_phase_ == AutoPhase::Host || auto_phase_ == AutoPhase::Joined) {
++                Log(LogLevel::Info, "[wifi] local wireless auto: no network: the session ends, waiting for one\n");
++                lan_stop();
++                lan_auto_phase(AutoPhase::Wait, "No Wi-Fi: the session ended");
++            }
++            return;
++        }
++        if (st.mode == LanMode::Off) return;
++        Log(LogLevel::Info, "[wifi] local wireless %s: no network: %s, waiting for one\n", st.mode == LanMode::Host ? "host" : "join",
++            st.mode == LanMode::Host ? "the session ends" : was && st.state == LanState::Ready ? "we leave the session" : "no more looking");
++        lan_stop();
++        std::lock_guard<std::mutex> l(lan_mu_);
++        lan_st_.state = LanState::Idle;
++        lan_st_.msg = was && st.state == LanState::Ready ? "No Wi-Fi: the session ended" : "";
++        lan_st_.players.clear();
++        lan_st_.hosts.clear();
++        return;
++    }
++    if (auto_on_) {
++        if (auto_phase_ == AutoPhase::Wait) lan_auto_phase(AutoPhase::Wait);  // (the tick starts when the game's wifi is on)
++        return;
++    }
++    if (st.mode == LanMode::Host) lan_start_host(st.max_players);
++    else if (st.mode == LanMode::Join) lan_start_find("", "");
++    lan_refresh(true);
++}
++
++// Host or Join with no network: chosen, not started (1); with one, 0
++bool Emu::lan_net_wait(LanMode mode, const std::string& addr, int max_players) {
++    if (net_ok_) return false;
++    Log(LogLevel::Info, "[wifi] local wireless %s: no network; it starts when there is one\n", mode == LanMode::Host ? "host" : "join");
++    std::lock_guard<std::mutex> l(lan_mu_);
++    lan_st_.mode = mode;
++    lan_st_.state = LanState::Idle;
++    lan_st_.msg.clear();
++    lan_st_.addr = addr;
++    if (mode == LanMode::Host && max_players >= 2) lan_st_.max_players = max_players;
++    lan_st_.players.clear();
++    lan_st_.hosts.clear();
++    return true;
++}
++
+ static LAN& lan_iface() {
+     if (MPInterface::GetType() != MPInterface_LAN) MPInterface::Set(MPInterface_LAN);
+     return static_cast<LAN&>(MPInterface::Get());
+@@ -509,7 +603,7 @@ void Emu::lan_auto_tick() {
+             if (wfc) {
+                 Log(LogLevel::Info, "[wifi] local wireless auto: the game is online (Nintendo WFC): no local session\n");
+                 lan_auto_phase(AutoPhase::Online);
+-            } else if (wifi) {
++            } else if (wifi && net_ok_) {
+                 Log(LogLevel::Info, "[wifi] local wireless auto: %s\n",
+                     auto_test_wifi_.empty() && auto_now_ ? "as if the game's wifi were on (wifi.local_auto_start = now)"
+                                                           : "the game turned its wifi on");
+@@ -653,7 +747,7 @@ void Emu::lan_refresh(bool now) {
+         Log(LogLevel::Info, "[wifi] local wireless join:%s: the host is gone\n", addr.c_str());
+         lan_stop();
+         if (mode == LanMode::Auto) {  // a new host from those still here (or us)
+-            if (auto_wifi_on()) lan_auto_listen("The host left; looking again");
++            if (auto_wifi_on() && net_ok_) lan_auto_listen("The host left; looking again");
+             else lan_auto_phase(AutoPhase::Wait, "The host left");
+         } else
+             lan_start_find(addr, "The host left, or the network lost it");
+@@ -1301,6 +1395,7 @@ void Emu::service_net() {
+ #ifdef BANANADS_LAN
+     std::lock_guard<std::mutex> g(net_mu_);
+     lan_apply();
++    lan_net_check(false);
+     if (local_) MPInterface::Get().Process();
+     update_mp_active();
+     lan_auto_tick();
+@@ -1363,6 +1458,10 @@ void Emu::run_frame() {
+         lan_refresh(false);
+     }
+ #ifdef BANANADS_LAN
++    if (lan_st_built_ && now_us() - net_check_us_ >= 1000000) {  // a network to play on (every 1 s)
++        std::lock_guard<std::mutex> g(net_mu_);
++        lan_net_check(false);
++    }
+     if (auto_on_ && now_us() - auto_tick_us_ >= 100000) {  // Auto's steps (wifi.local = auto)
+         std::lock_guard<std::mutex> g(net_mu_);
+         lan_auto_tick();
+diff --git a/bananads/src/emu.h b/bananads/src/emu.h
+index fe84aa7..33488fa 100644
+--- a/bananads/src/emu.h
++++ b/bananads/src/emu.h
+@@ -105,6 +105,7 @@ public:
+         std::vector<LanHost> hosts;      // Join, not joined: the hosts found on the network (each says so every 1 s)
+         AutoPhase phase = AutoPhase::Wait;  // Auto: where it is
+         bool host_untagged = false;      // Auto, joined: a host that doesn't say its game (desktop melonDS)
++        bool no_net = false;             // no network (Wi-Fi off or not connected): the mode waits for one
+     };
+     LanStatus lan_status() const;             // any thread: a copy
+     // Auto: addr "hold" is the page's Disconnect (the session ends; Auto waits for the game's wifi to go off and on)
+@@ -157,6 +158,8 @@ private:
+     bool lan_auto_join(uint32_t ip, bool tagged);
+     void lan_auto_host();
+     void lan_tag_update();                            // the beacon's game tag and Status (a host of any mode)
++    void lan_net_check(bool now);                     // a usable network, every 1 s (same); its changes
++    bool lan_net_wait(LanMode mode, const std::string& addr, int max_players);  // no network: the mode waits
+ #endif
+ 
+     std::atomic<double> skew_req_{1.0};
+@@ -188,6 +191,9 @@ private:
+     bool auto_on_ = false;
+     bool auto_now_ = false;                   // wifi.local_auto_start = now: no wait for the game's wifi (tests)
+     std::vector<std::pair<long, bool>> auto_test_wifi_;  // wifi.local_auto_test_wifi: the game's wifi by frame (tests)
++    bool lan_st_built_ = false;               // (setup_local ran: the network check runs)
++    bool net_ok_ = true;                      // a network interface up, connected, with an IPv4 address
++    uint64_t net_check_us_ = 0;
+     long auto_wifi_off_frames_ = 0;           // frames run in a row with the game's wifi off
+     bool auto_wifi_was_ = false;              // (the log: the game's wifi off and on within a session)
+     static constexpr long kAutoWifiGrace = 180;  // 3 s of the game's time: a wifi off that long ends Auto's session
+diff --git a/bananads/src/frontend_kms.cpp b/bananads/src/frontend_kms.cpp
+index 655c116..2450767 100644
+--- a/bananads/src/frontend_kms.cpp
++++ b/bananads/src/frontend_kms.cpp
+@@ -1167,6 +1167,7 @@ static int mh_lan_get(void*, bmenu_lan* st) {
+                                  BM_AUTO_ONLINE, BM_AUTO_HELD};   // (Emu::AutoPhase's order)
+     st->phase = phases[(int)l.phase];
+     st->untagged = l.host_untagged;
++    st->no_net = l.no_net;
+     st->state = l.state == Emu::LanState::Busy ? BM_LAN_BUSY : l.state == Emu::LanState::Ready ? BM_LAN_READY
+               : l.state == Emu::LanState::Failed ? BM_LAN_FAILED : BM_LAN_IDLE;
+     st->max_players = l.max_players;
+diff --git a/bananads/src/menu.c b/bananads/src/menu.c
+index 3df5048..ef4cbc8 100644
+--- a/bananads/src/menu.c
++++ b/bananads/src/menu.c
+@@ -792,9 +792,10 @@ static void lan_open(void) {   /* Quick settings > LAN multiplayer */
+     lan_rows();
+ }
+ /* the Players row: the session's size, set before hosting (or again while alone in it) */
+-static int lan_players_off(void) { return lan_locked() || (lan_hosting() && LS.nplayers > 1); }
++static int lan_players_off(void) { return lan_locked() || LS.no_net || (lan_hosting() && LS.nplayers > 1); }
+ static const char *lan_short(char *v, size_t n) {   /* Quick settings' value for the row */
+-    if (LS.mode == BM_LAN_OFF) snprintf(v, n, "Off");
++    if (LS.no_net) snprintf(v, n, "No Wi-Fi");
++    else if (LS.mode == BM_LAN_OFF) snprintf(v, n, "Off");
+     else if (LS.mode == BM_LAN_AUTO) {
+         switch (LS.phase) {
+         case BM_AUTO_SEARCH: snprintf(v, n, "Auto, looking..."); break;
+@@ -919,7 +920,8 @@ static void draw_bottom(void) {
+             int k = S(2) < 2 ? 2 : S(2);
+             bitmap(c, ic, 12, gx0 + S(16), y + (rh - 12 * k) / 2, k, sel ? C_ONSEL : C_LIGHT);
+             const char *lab = id == ROW_VOL ? "Volume" : id == ROW_BRI ? "Brightness" : id == ROW_MIC ? "Microphone" : id == ROW_CHEAT ? "Cheats" : id == ROW_LAN ? "LAN multiplayer" : H.opt_label(H.ctx, id - ROW_OPT);
+-            text(c, &F_MED, lab, gx0 + S(56), y + (rh - S(20)) / 2.0f - S(1), S(20), sel ? C_ONSEL : C_LIGHT, 0, 0);
++            const int dim_row = id == ROW_LAN && LS.no_net;   /* LAN multiplayer: no Wi-Fi */
++            text(c, &F_MED, lab, gx0 + S(56), y + (rh - S(20)) / 2.0f - S(1), S(20), sel ? C_ONSEL : dim_row ? C_DIM : C_LIGHT, 0, 0);
+             char v[32] = "";
+             if (id == ROW_VOL || id == ROW_BRI) {
+                 int val = id == ROW_VOL ? vol : bri, bx = gx1 - S(110) - S(146);
+@@ -935,7 +937,7 @@ static void draw_bottom(void) {
+             }
+             else if (id == ROW_LAN) lan_short(v, sizeof v);
+             else { snprintf(v, sizeof v, "< %s >", lang_tr(H.opt_value_name(H.ctx, id - ROW_OPT, H.opt_get(H.ctx, id - ROW_OPT)))); lang_keep(v); }
+-            text(c, &F_MED, v, gx1 - S(18), y + (rh - S(20)) / 2.0f - S(1), S(20), sel ? C_ONSEL : C_CYAN, 0, 2);
++            text(c, &F_MED, v, gx1 - S(18), y + (rh - S(20)) / 2.0f - S(1), S(20), sel ? C_ONSEL : dim_row ? C_DIM : C_CYAN, 0, 2);
+             y += rh + gap;
+         }
+         const char *help = "";
+@@ -944,7 +946,8 @@ static void draw_bottom(void) {
+         case ROW_BRI: help = "Left / right to change, both screens"; break;
+         case ROW_MIC: help = "A live meter of the mic, and a blow for games that ask for one"; break;
+         case ROW_CHEAT: help = cheats_off() ? "Not during a local wireless game" : "Action Replay codes for this game: A to see them"; break;
+-        case ROW_LAN: help = "Local wireless games with consoles on this Wi-Fi network: A to open"; break;
++        case ROW_LAN: help = LS.no_net ? "No Wi-Fi: connect to a network in BananaOS's Settings > Network"
++                                       : "Local wireless games with consoles on this Wi-Fi network: A to open"; break;
+         default: help = "Left / right to change: it applies at once, and stays for the next game"; break;
+         }
+         text(c, &F_REG, help, gx0 + S(4), y + S(6), S(16), C_GREY, gx1 - gx0, 0);
+@@ -996,7 +999,7 @@ static void draw_bottom(void) {
+         int y = gy0, rh = S(44), gap = S(6);
+         for (int r = 0; r < nlrows; r++) {
+             const int id = lrows[r], sel = r == sel_lan, leave = id == LR_LEAVE;
+-            const int off = (id == LR_MODE && locked) || (id == LR_PLAYERS && lan_players_off()) || (id == LR_HOSTS && locked);
++            const int off = (id == LR_MODE && (locked || LS.no_net)) || (id == LR_PLAYERS && lan_players_off()) || (id == LR_HOSTS && (locked || LS.no_net));
+             R_ROW[r] = (rect){ gx0, y, gx1, y + rh };
+             uint32_t bd = sel ? (leave ? C_REDL : C_LIGHT) : (leave ? C_REDDIM : C_LINE), bg = sel ? (leave ? C_RED : C_BLUE) : C_PANEL;
+             uint32_t fg = sel ? (leave ? 0xffffff : C_ONSEL) : (leave ? C_REDL : off ? C_DIM : C_LIGHT);
+@@ -1006,7 +1009,7 @@ static void draw_bottom(void) {
+             text(c, &F_MED, lab, gx0 + S(18), y + (rh - S(20)) / 2.0f - S(1), S(20), fg, 0, 0);
+             char v[96] = "";
+             if (id == LR_MODE) {
+-                if (locked) snprintf(v, sizeof v, "%s", lan_mode_name[LS.mode]);
++                if (locked || LS.no_net) snprintf(v, sizeof v, "%s", lan_mode_name[LS.mode]);
+                 else { snprintf(v, sizeof v, "< %s >", lang_tr(lan_mode_name[lan_pick])); lang_keep(v); }
+             } else if (id == LR_PLAYERS) {
+                 if (lan_players_off()) snprintf(v, sizeof v, "%d", LS.max_players);
+@@ -1026,7 +1029,12 @@ static void draw_bottom(void) {
+         char l[200], l1[200], l2[200];
+         uint32_t col = C_LIGHT;
+         const char *auto_why = "";   /* Auto: a second line, what it waits for or what just happened */
+-        if (LS.mode == BM_LAN_AUTO) {
++        if (LS.no_net) {   /* the mode stays; it starts again with a network */
++            snprintf(l, sizeof l, "%s", LS.msg[0] ? LS.msg : "No Wi-Fi network"); col = C_REDL;
++            auto_why = LS.mode == BM_LAN_OFF ? "Connect in BananaOS: Settings > Network."
++                                             : "Connect in BananaOS: Settings > Network. The mode stays and starts again then.";
++        }
++        else if (LS.mode == BM_LAN_AUTO) {
+             switch (LS.phase) {
+             case BM_AUTO_SEARCH: snprintf(l, sizeof l, "Auto: looking for a host of this game..."); break;
+             case BM_AUTO_JOINING: snprintf(l, sizeof l, "Auto: joining %s...", LS.addr); break;
+@@ -1186,10 +1194,10 @@ static void draw_bottom(void) {
+     int fy = c->h - S(56);
+     const char *bl = s == SC_MAIN ? "Resume" : "Back", *al = "Select", *mid = "";
+     if (s == SC_SAVE) al = "Save"; else if (s == SC_LOAD) al = "Load";
+-    else if (s == SC_SET) al = rows[sel_set] == ROW_MIC || rows[sel_set] == ROW_LAN || (rows[sel_set] == ROW_CHEAT && !cheats_off()) ? "Open" : "OK";
++    else if (s == SC_SET) al = rows[sel_set] == ROW_MIC || (rows[sel_set] == ROW_LAN && !LS.no_net) || (rows[sel_set] == ROW_CHEAT && !cheats_off()) ? "Open" : "OK";
+     else if (s == SC_LAN) {
+         const int id = nlrows ? lrows[sel_lan] : LR_MODE;
+-        if (id == LR_MODE) al = lan_locked() ? "OK" : lan_pick != LS.mode ? (lan_pick == BM_LAN_HOST ? "Start hosting" : lan_pick == BM_LAN_JOIN ? "Look for hosts" : lan_pick == BM_LAN_AUTO ? "Turn on Auto" : "Turn off")
++        if (id == LR_MODE) al = lan_locked() || LS.no_net ? "OK" : lan_pick != LS.mode ? (lan_pick == BM_LAN_HOST ? "Start hosting" : lan_pick == BM_LAN_JOIN ? "Look for hosts" : lan_pick == BM_LAN_AUTO ? "Turn on Auto" : "Turn off")
+                               : LS.mode == BM_LAN_JOIN && LS.state != BM_LAN_READY ? "Hosts" : "OK";
+         else if (id == LR_PLAYERS) al = !lan_players_off() && (LS.mode == BM_LAN_HOST || LS.mode == BM_LAN_AUTO) && lan_max_pick != LS.max_players ? "Apply" : "OK";
+         else if (id == LR_HOSTS) al = "Open";
+@@ -1283,6 +1291,7 @@ static void lan_activate(void) {
+         return;
+     }
+     if (locked) { play(SND_BACK); mlog("[menu] LAN: no mode change in a local wireless game\n"); return; }
++    if (LS.no_net) { play(SND_BACK); mlog("[menu] LAN: no Wi-Fi\n"); return; }
+     if (id == LR_MODE && lan_pick != LS.mode) {
+         mlog("[menu] LAN: %s\n", lan_pick == BM_LAN_HOST ? "host" : lan_pick == BM_LAN_JOIN ? "look for hosts"
+                                  : lan_pick == BM_LAN_AUTO ? "auto" : "off");
+@@ -1307,7 +1316,7 @@ static void lan_activate(void) {
+ static void lan_adjust(int d) {   /* left/right on the LAN page */
+     lan_rows();
+     const int id = lrows[sel_lan];
+-    if (id == LR_MODE && !lan_locked()) {
++    if (id == LR_MODE && !lan_locked() && !LS.no_net) {
+         int k = 0;
+         while (k < BM_LAN_MODES - 1 && lan_cycle[k] != lan_pick) k++;
+         lan_pick = lan_cycle[(k + d + BM_LAN_MODES) % BM_LAN_MODES]; play(SND_MOVE); dirty_bot = 1;
+@@ -1319,7 +1328,7 @@ static void lan_adjust(int d) {   /* left/right on the LAN page */
+ }
+ static void lan_join(int i) {
+     if (i < 0 || i >= LS.nhosts || (LS.state == BM_LAN_BUSY && LS.addr[0])) { play(SND_BACK); return; }
+-    if (lan_locked()) { play(SND_BACK); return; }
++    if (lan_locked() || LS.no_net) { play(SND_BACK); return; }
+     char addr[48]; snprintf(addr, sizeof addr, "%s", LS.hosts[i].addr);
+     mlog("[menu] LAN: join %s\n", addr);
+     H.lan_set(H.ctx, BM_LAN_JOIN, 0, addr);
+@@ -1356,6 +1365,7 @@ static void activate(void) {
+         if (rows[sel_set] == ROW_MIC) { scr = SC_MIC; play(SND_SELECT); dirty_bot = 1; }
+         else if (rows[sel_set] == ROW_CHEAT && cheats_off()) { play(SND_BACK); mlog("[menu] Cheats are off in a local wireless game\n"); }
+         else if (rows[sel_set] == ROW_CHEAT) { scr = SC_CHEAT; sel_cheat = top_cheat = 0; play(SND_SELECT); dirty_bot = 1; }
++        else if (rows[sel_set] == ROW_LAN && (lan_poll(), LS.no_net)) { play(SND_BACK); mlog("[menu] LAN multiplayer: no Wi-Fi\n"); }
+         else if (rows[sel_set] == ROW_LAN) { lan_open(); scr = SC_LAN; play(SND_SELECT); dirty_bot = 1; }
+         else play(SND_SELECT);
+         break;
+@@ -1526,10 +1536,11 @@ int bmenu_run(int start) {
+         while (open_ && H.poll(H.ctx, &e)) handle(&e);
+         if (open_ && held_dir && now_ms() >= rep_next) { nav(rep_dx, rep_dy); rep_next = now_ms() + 110; }
+         { static long long mt; if (scr == SC_MIC && now_ms() - mt >= 33) { mt = now_ms(); dirty_bot = 1; } }   /* the meter moves */
+-        if ((scr == SC_LAN || scr == SC_LAN_HOSTS || scr == SC_LAN_LEAVE || (scr == SC_SET && rows[sel_set] == ROW_LAN)) && now_ms() - lan_polled >= 500) {
++        if ((scr == SC_LAN || scr == SC_LAN_HOSTS || scr == SC_LAN_LEAVE || scr == SC_SET) && now_ms() - lan_polled >= 500) {
+             if (lan_poll()) dirty_bot = 1;   /* the LAN's state, twice a second; a join done: back to the page */
+             if (scr == SC_LAN_HOSTS && lan_joining && !(LS.state == BM_LAN_BUSY && LS.addr[0])) { lan_joining = 0; scr = SC_LAN; sel_lan = 0; dirty_bot = 1; }
+             if (scr == SC_LAN_LEAVE && LS.state != BM_LAN_READY) { scr = SC_LAN; dirty_bot = 1; }
++            if (scr == SC_LAN_HOSTS && LS.no_net) { lan_joining = 0; scr = SC_LAN; sel_lan = 0; dirty_bot = 1; }   /* the network went */
+         }
+         { static long long vt; if (scr == SC_SET && now_ms() - vt >= 500) { vt = now_ms(); want_ex(-1, -1, 1); }   /* the volume keys' */
+           int r = vol_read; if (r >= 0) { vol_read = -1; if (scr == SC_SET && r != vol && now_ms() - vol_set_at > 1500) { vol = r; dirty_bot = 1; } } }
+diff --git a/bananads/src/menu.h b/bananads/src/menu.h
+index b230e45..833c793 100644
+--- a/bananads/src/menu.h
++++ b/bananads/src/menu.h
+@@ -40,6 +40,7 @@ typedef struct {
+     struct { char name[64]; char addr[48]; int players, max; } hosts[BM_LAN_MAX];
+     int phase;            /* auto: BM_AUTO_* */
+     int untagged;         /* auto, joined: the host doesn't say its game (desktop melonDS) */
++    int no_net;           /* no network (Wi-Fi off or not connected): nothing starts; the mode is kept */
+ } bmenu_lan;
+ 
+ typedef struct {
