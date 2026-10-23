@@ -112,9 +112,13 @@ handhelds themselves.
   are given back.
 - **Local wireless over the network**: melonDS's LAN (ENet, UDP 7064 for the game and 7063 for the hosts'
   broadcasts, once a second), so a DS game's local multiplayer (Download Play, Mario Kart DS's local races) works
-  between two handhelds, or a handheld and desktop melonDS 1.1, on the same Wi-Fi network. `wifi.local = host`
-  starts a session with the game (`wifi.local_players`, 2-16, how many may join), `wifi.local = join:<address>`
-  joins one; the player name is `firmware.nickname` (Settings > Nintendo DS > DS name). Off by default.
+  between two handhelds, or a handheld and desktop melonDS 1.1, on the same Wi-Fi network. The in-game menu's
+  Quick settings > LAN multiplayer page hosts a session (Players: 2-16, 4 by default), lists the hosts on the
+  network and joins one, shows the players with their ping, and disconnects, without restarting the game; during a
+  local wireless game only Disconnect works. It keeps the mode in `bananads.conf` (`wifi.local = off`, `host` or
+  `join`, which looks for hosts at the start; `wifi.local = join:<address>` joins that host directly), and
+  `BANANADS_WIFI_LOCAL` in `/data/banana/bananads.env` still wins over it (the page says so). The player name is
+  `firmware.nickname` (Settings > Nintendo DS > DS name). Off by default.
 
 What the launcher (`run-bananads`) gives it: the contract's names, and the same as BananaDS's own settings (it reads
 every `BANANADS_<KEY>` as the setting `<key>`, over `/data/bananads/bananads.conf`):
