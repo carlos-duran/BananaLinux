@@ -120,7 +120,7 @@ handhelds themselves.
   beacon carries the game's code, melonDS patch 0096), else a desktop melonDS host if there is no such host, else
   hosts; of two that start together, the one with the higher address joins the other; nothing changes during a
   local wireless game, a player whose host leaves looks again, a game that goes online (Nintendo WFC) gets no
-  session, and a host alone in its session whose game turns its wifi off for 3 s (it left its multiplayer mode) ends it and waits (with others in it, the session stays). It keeps the mode in `bananads.conf` (`wifi.local = off`, `auto`, `host` or `join`, which looks for
+  session, and a host alone in its session whose game turns its wifi off for 3 s (it left its multiplayer mode) ends it and waits (with others in it, after 30 s off; Auto then waits and looks again when the game's wifi is on). It keeps the mode in `bananads.conf` (`wifi.local = off`, `auto`, `host` or `join`, which looks for
   hosts at the start; `wifi.local = join:<address>` joins that host directly), and `BANANADS_WIFI_LOCAL` in
   `/data/banana/bananads.env` still wins over it (the page says so). The player name is `firmware.nickname`
   (Settings > Nintendo DS > DS name). Without a Wi-Fi network (Settings > Network) nothing starts and the menu

@@ -1,0 +1,101 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Carlos Duran <15650777+carlos-duran@users.noreply.github.com>
+Subject: [PATCH] BananaDS: Auto ends a session others are in after 30 s of the
+ game's wifi off
+
+N kept an Auto session with others in it for as long as the game's wifi
+stayed off, so a handheld whose game had left its multiplayer mode stayed
+a host, or a joined player, until Disconnect.
+
+With others in the session (Auto hosting them, or joined to a host), the
+session now ends after 30 s (1800 frames) of the game's wifi off, counted
+as the 3 s rule is (frames run: the paused menu doesn't count); Auto waits
+again and looks for a host once the game's wifi is on. A host alone keeps
+the 3 s rule, and Mario Kart DS's longer wifi off between looking for
+groups and creating one (more than 3 s) still keeps the session. Host and
+Join are unchanged.
+---
+ bananads/docs/SETTINGS.md |  2 +-
+ bananads/src/emu.cpp      | 22 +++++++++++++++-------
+ bananads/src/emu.h        |  1 +
+ 3 files changed, 17 insertions(+), 8 deletions(-)
+
+diff --git a/bananads/docs/SETTINGS.md b/bananads/docs/SETTINGS.md
+index f2433c9..6e2e449 100644
+--- a/bananads/docs/SETTINGS.md
++++ b/bananads/docs/SETTINGS.md
+@@ -78,7 +78,7 @@ key can also come from the environment as `BANANADS_<KEY>` (dots become undersco
+ | `firmware.language` | the firmware's | 0 Japanese, 1 English, 2 French, 3 German, 4 Italian, 5 Spanish |
+ | `rtc.fixed` | none | the DS clock's start, `YYYY-MM-DD HH:MM:SS` (or `T` or `_` for the space), instead of the current time: two runs of a game that seeds its random numbers from the clock then go the same way (for tests) |
+ | `wifi.dns` | `kaeru` | `kaeru`, `altwfc`, `wiilink`, an IPv4 address, `system` (the handheld's own DNS) or `off` (no Wi-Fi at all) |
+-| `wifi.local` | `off` | local wireless with other handhelds or desktop melonDS on the same network (builds with `BANANADS_LAN`): `host` (a session others join), `join` (look for hosts; pick one in the in-game menu's LAN multiplayer page), `join:<the host's address>` (join that host at the start) or `auto` (see below). The menu's page changes it while the game runs and keeps `off`, `auto`, `host` or `join` here for the next game (a join keeps `join`, not the address).<br>`auto`: nothing until the game turns its wifi on (its multiplayer menu, Download Play); then it listens for the hosts' beacons for 2-3 s and joins a host of the same game (melonDS patch 0096's tag: one hosting by hand first, else the lowest address), else a host that doesn't say its game (desktop melonDS) if no tagged one is there, else hosts. Of two that start together and both host, the one alone with the higher address joins the other once it has heard it twice. Nothing changes during a local wireless game; a player whose host leaves looks again (one of those left hosts); a game that goes online through Nintendo WFC gets no session. When the game turns its wifi off for 3 s of its own time (it left its multiplayer mode; MKDS turns it off and on for under 2 s between its screens) while Auto hosts a session nobody else is in, the session ends and Auto waits again; the paused menu doesn't count. With others in the session (Auto hosting them, or in a host's session) it stays, as `host`'s and `join`'s do: MKDS keeps its wifi off for longer than 3 s between looking for groups and creating one. Every console in the room on `auto` (or one on `host`, the others on `auto`) is enough.<br>No network (no interface other than loopback up, connected and with an IPv4 address; checked every 1 s): nothing starts and no join is tried, the mode stays as chosen (here too); a session ends when the network goes (the others look again); when it is back, `host` hosts again, `join` looks for hosts, `auto` starts over once the game's wifi is on. Nintendo WFC (slirp) isn't affected |
++| `wifi.local` | `off` | local wireless with other handhelds or desktop melonDS on the same network (builds with `BANANADS_LAN`): `host` (a session others join), `join` (look for hosts; pick one in the in-game menu's LAN multiplayer page), `join:<the host's address>` (join that host at the start) or `auto` (see below). The menu's page changes it while the game runs and keeps `off`, `auto`, `host` or `join` here for the next game (a join keeps `join`, not the address).<br>`auto`: nothing until the game turns its wifi on (its multiplayer menu, Download Play); then it listens for the hosts' beacons for 2-3 s and joins a host of the same game (melonDS patch 0096's tag: one hosting by hand first, else the lowest address), else a host that doesn't say its game (desktop melonDS) if no tagged one is there, else hosts. Of two that start together and both host, the one alone with the higher address joins the other once it has heard it twice. Nothing changes during a local wireless game; a player whose host leaves looks again (one of those left hosts); a game that goes online through Nintendo WFC gets no session. When the game turns its wifi off for 3 s of its own time (it left its multiplayer mode; MKDS turns it off and on for under 2 s between its screens) while Auto hosts a session nobody else is in, the session ends and Auto waits again; the paused menu doesn't count. With others in the session (Auto hosting them, or in a host's session) the limit is 30 s (1800 frames), after which Auto ends or leaves the session and waits again (the others look again): MKDS keeps its wifi off for longer than 3 s between looking for groups and creating one. `host` and `join` never end a session for this. Every console in the room on `auto` (or one on `host`, the others on `auto`) is enough.<br>No network (no interface other than loopback up, connected and with an IPv4 address; checked every 1 s): nothing starts and no join is tried, the mode stays as chosen (here too); a session ends when the network goes (the others look again); when it is back, `host` hosts again, `join` looks for hosts, `auto` starts over once the game's wifi is on. Nintendo WFC (slirp) isn't affected |
+ | `wifi.local_players` | `4` | `host`, `auto`: how many may be in the session, the host included (2-16) |
+ | `wifi.local_auto_start` | `wifi` | `auto`: `wifi` waits for the game to turn its wifi on; `now` starts at once (for tests with a game that doesn't) |
+ | `wifi.local_auto_test_wifi` | (none) | `auto`, for tests: the game's wifi as a script by frame, e.g. `on@0,off@2400,on@2500` (instead of the DS's own) |
+diff --git a/bananads/src/emu.cpp b/bananads/src/emu.cpp
+index 1929871..f81db05 100644
+--- a/bananads/src/emu.cpp
++++ b/bananads/src/emu.cpp
+@@ -583,16 +583,17 @@ void Emu::lan_auto_tick() {
+     // the game's wifi off for 3 s of its own time (frames run: the paused menu doesn't count): it has left its
+     // multiplayer mode, so it isn't in a local wireless game. MKDS turns it off and on again between its own
+     // screens and races, for under 2 s.
+-    // Only a host alone in its session ends it so: with others in it (a host's players, or a joined player's host),
+-    // the session stays, as Host's and Join's do. MKDS keeps its wifi off for longer than that between looking for
+-    // groups and creating one, and the others' melonDS would keep a session that had ended.
++    // That ends only a host alone in its session. With others in it (a host's players, or a joined player's host),
++    // the session ends after 30 s off: MKDS keeps its wifi off for longer than 3 s between looking for groups and
++    // creating one, and the others' melonDS would keep a session that had ended.
+     const bool wifi_gone = auto_wifi_off_frames_ >= kAutoWifiGrace;
++    const bool wifi_long_gone = auto_wifi_off_frames_ >= kAutoWifiGraceShared;
+     const bool alone = auto_phase_ == AutoPhase::Host && static_cast<LAN&>(MPInterface::Get()).GetNumPlayers() <= 1;
+     if (wifi != auto_wifi_was_ && (auto_phase_ == AutoPhase::Host || auto_phase_ == AutoPhase::Joined))
+         Log(LogLevel::Info, "[wifi] local wireless auto: the game's wifi %s\n",
+             wifi ? "is on again: the session stays"
+             : alone ? "went off: the session ends if it stays off for 3 s while nobody else is in it"
+-                    : "went off: the session stays (others are in it)");
++                    : "went off: others are in the session: it ends if it stays off for 30 s");
+     auto_wifi_was_ = wifi;
+     auto_bad_.erase(std::remove_if(auto_bad_.begin(), auto_bad_.end(),
+                                    [t](const std::pair<uint32_t, uint64_t>& b) { return b.second <= t; }),
+@@ -651,9 +652,10 @@ void Emu::lan_auto_tick() {
+         }
+         case AutoPhase::Host: {
+             LAN& lan = static_cast<LAN&>(MPInterface::Get());
+-            if (wifi_gone && alone) {
++            if (alone ? wifi_gone : wifi_long_gone) {  // (the others, if any, look again)
+                 lan_stop();
+-                Log(LogLevel::Info, "[wifi] local wireless auto: the game turned its wifi off: the session ends, waiting\n");
++                Log(LogLevel::Info, "[wifi] local wireless auto: the game turned its wifi off%s: the session ends, waiting\n",
++                    alone ? "" : " for 30 s");
+                 lan_auto_phase(AutoPhase::Wait, "The game turned its wireless off: the session ended");
+                 break;
+             }
+@@ -697,7 +699,13 @@ void Emu::lan_auto_tick() {
+             }
+             break;
+         }
+-        case AutoPhase::Joined:  // (a lost host: lan_refresh; the game's wifi off: we stay, see above)
++        case AutoPhase::Joined:  // (a lost host: lan_refresh)
++            if (wifi_long_gone) {
++                lan_stop();
++                Log(LogLevel::Info, "[wifi] local wireless auto: the game turned its wifi off for 30 s: we leave the session, waiting\n");
++                lan_auto_phase(AutoPhase::Wait, "The game turned its wireless off: we left the session");
++                break;
++            }
+             if (wfc && !mp_active()) {  // joined while the game looked for an access point: it went online
+                 lan_stop();
+                 Log(LogLevel::Info, "[wifi] local wireless auto: the game is online (Nintendo WFC): we leave the session\n");
+diff --git a/bananads/src/emu.h b/bananads/src/emu.h
+index a2f7a94..6f545d6 100644
+--- a/bananads/src/emu.h
++++ b/bananads/src/emu.h
+@@ -197,6 +197,7 @@ private:
+     long auto_wifi_off_frames_ = 0;           // frames run in a row with the game's wifi off
+     bool auto_wifi_was_ = false;              // (the log: the game's wifi off and on within a session)
+     static constexpr long kAutoWifiGrace = 180;  // 3 s of the game's time: a wifi off that long ends an Auto host's session with nobody else in it
++    static constexpr long kAutoWifiGraceShared = 1800;  // 30 s: the same for a session others are in (host or joined)
+     AutoPhase auto_phase_ = AutoPhase::Wait;
+     uint64_t auto_tick_us_ = 0, auto_deadline_us_ = 0, auto_host_since_us_ = 0;
+     uint32_t auto_my_ip_ = 0;                 // our address, from our own beacon (0: not heard yet)
