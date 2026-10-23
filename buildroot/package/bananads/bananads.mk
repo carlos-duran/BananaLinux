@@ -36,6 +36,13 @@ define BANANADS_MELONDS_PATCH
 endef
 BANANADS_POST_PATCH_HOOKS += BANANADS_MELONDS_PATCH
 
+# then BananaLinux's own patches to melonDS (local wireless), from buildroot/patches/bananads/melonds: a folder
+# Buildroot's patch step leaves alone (it applies only the *.patch files beside it, to BananaDS's sources)
+define BANANADS_MELONDS_BANANALINUX_PATCH
+	$(APPLY_PATCHES) $(@D)/melonds $(BR2_EXTERNAL_BANANA_PATH)/patches/bananads/melonds \*.patch
+endef
+BANANADS_POST_PATCH_HOOKS += BANANADS_MELONDS_BANANALINUX_PATCH
+
 # The handhelds' build (BananaDS's docs/BANANALINUX.md, B1): melonDS's JIT, no SDL window, ALSA, the KMS frontend,
 # local wireless over the network (melonDS's LAN, libenet; off until wifi.local asks for it), tuned for the
 # Cortex-A55 with link-time optimization
