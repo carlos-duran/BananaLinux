@@ -113,10 +113,10 @@ handhelds themselves.
 - **Local wireless over the network**: melonDS's LAN (ENet, UDP 7064 for the game and 7063 for the hosts'
   broadcasts, once a second), so a DS game's local multiplayer (Download Play, Mario Kart DS's local races) works
   between two handhelds, or a handheld and desktop melonDS 1.1, on the same Wi-Fi network. The in-game menu's
-  Quick settings > LAN multiplayer page hosts a session (Players: 2-16, 4 by default), lists the hosts on the
+  Quick settings > LAN multiplayer page hosts a session (Players: 2-16, 4 by default, changed once Host is on), lists the hosts on the
   network and joins one, shows the players with their ping, and disconnects, without restarting the game; during a
-  local wireless game only Disconnect works. Its Auto mode (not the default) needs nothing else (no Players row: a
-  session it hosts has Host's size, `wifi.local_players`; no Disconnect: Off leaves at once, also during a local
+  local wireless game only Disconnect works. Its Auto mode (not the default) needs nothing else (a session it hosts
+  has Host's size, `wifi.local_players`; no Disconnect: Off leaves at once, also during a local
   wireless game after a question, and Auto again starts afresh): when the game
   turns its wifi on (its multiplayer menu, Download Play) it listens 2-3 s and joins a host of the same game (the
   beacon carries the game's code, melonDS patch 0096), else a desktop melonDS host if there is no such host, else
