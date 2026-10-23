@@ -1,0 +1,378 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: BananaDS <bananads@localhost>
+Subject: [PATCH] BananaDS: local wireless started, changed and ended while the
+ game runs
+
+Emu::lan_request() asks for Off, Host (with its size) or Join (look for hosts, or join one address) from any
+thread and returns at once; the emulator's thread carries it out between two frames, or in the paused menu's
+service loop, so a join that waits up to 5 s for its host never blocks the caller. Emu::lan_status() gives the
+mode, the state (idle, busy, ready, failed and why), the session's players with their ping and, while looking,
+the hosts melonDS's LAN discovery hears. A failed join, or a host that leaves, goes back to looking for hosts
+with a message. wifi.local accepts "join" (look for hosts at the start); wifi.local_players (default 4) is
+clamped to 2-16. Needs melonDS patch 0095.
+---
+ bananads/docs/SETTINGS.md |   4 +-
+ bananads/src/emu.cpp      | 245 ++++++++++++++++++++++++++++++++++++--
+ bananads/src/emu.h        |  36 ++++++
+ 3 files changed, 272 insertions(+), 13 deletions(-)
+
+diff --git a/bananads/docs/SETTINGS.md b/bananads/docs/SETTINGS.md
+index cd49df4..81d2313 100644
+--- a/bananads/docs/SETTINGS.md
++++ b/bananads/docs/SETTINGS.md
+@@ -78,8 +78,8 @@ key can also come from the environment as `BANANADS_<KEY>` (dots become undersco
+ | `firmware.language` | the firmware's | 0 Japanese, 1 English, 2 French, 3 German, 4 Italian, 5 Spanish |
+ | `rtc.fixed` | none | the DS clock's start, `YYYY-MM-DD HH:MM:SS` (or `T` or `_` for the space), instead of the current time: two runs of a game that seeds its random numbers from the clock then go the same way (for tests) |
+ | `wifi.dns` | `kaeru` | `kaeru`, `altwfc`, `wiilink`, an IPv4 address, `system` (the handheld's own DNS) or `off` (no Wi-Fi at all) |
+-| `wifi.local` | `off` | `host`, or `join:<the host's address>`: local wireless with another handheld (builds with `BANANADS_LAN`) |
+-| `wifi.local_players` | `4` | how many can join a host |
++| `wifi.local` | `off` | local wireless with other handhelds or desktop melonDS on the same network (builds with `BANANADS_LAN`): `host` (a session others join), `join` (look for hosts; pick one in the in-game menu's LAN multiplayer page) or `join:<the host's address>` (join that host at the start). The menu's page changes it while the game runs and keeps `off`, `host` or `join` here for the next game (a join keeps `join`, not the address) |
++| `wifi.local_players` | `4` | `host`: how many may be in the session, the host included (2-16) |
+ | `wifi.mac` | (none) | the DS's MAC (`00:09:bf:12:34:56`), over the saved one (not saved itself) |
+ | `wifi.mac_file` | `wifi-mac` | where the DS's MAC is kept (under `BANANADS_DATA`; `off`: not kept). Made once (from the eMMC's CID, else wlan0's MAC, else at random; the old 00:09:BF:11:22:33 if WFC settings were saved before it) and never changed |
+ | `wifi.wfc_settings` | `wfcsettings.bin` | where the Nintendo WFC settings the game writes (its WFC ID) are kept between sessions, melonDS's 2304-byte file (under `BANANADS_DATA`; `off`: not kept, a new WFC ID every session) |
+diff --git a/bananads/src/emu.cpp b/bananads/src/emu.cpp
+index 1e45241..f2e3143 100644
+--- a/bananads/src/emu.cpp
++++ b/bananads/src/emu.cpp
+@@ -119,21 +119,235 @@ void Emu::setup_wifi() {
+ }
+ 
+ // Local wireless with another handheld (Pokémon trades and battles, Mario Kart's local races, PictoChat):
+-// wifi.local = host on one, join:<the host's address> on the other. Both on the same network.
++// wifi.local = host on one, join:<the host's address> (or join: look for hosts, and pick one in the in-game menu's
++// LAN multiplayer page) on the other. Both on the same network. The menu can change it while the game runs
++// (lan_request).
+ void Emu::setup_local() {
+-    std::string mode = cfg_.str("wifi.local", "off");
++    const std::string mode = cfg_.str("wifi.local", "off");
++#ifdef BANANADS_LAN
++    {
++        std::lock_guard<std::mutex> l(lan_mu_);
++        lan_st_.built = true;
++        lan_st_.max_players = (int)std::clamp(cfg_.num("wifi.local_players", 4), 2L, 16L);
++    }
+     if (mode == "off") return;
++    if (mode == "host") lan_start_host(lan_status().max_players);
++    else if (mode == "join") lan_start_find("", "");
++    else if (mode.rfind("join:", 0) == 0) lan_start_join(mode.substr(5));
++    else Log(LogLevel::Warn, "[wifi] wifi.local=%s: not off, host, join or join:<address>\n", mode.c_str());
++    lan_refresh(true);
++#else
++    if (mode == "off") return;
++    Log(LogLevel::Warn, "[wifi] wifi.local=%s, but this build has no local wireless (BANANADS_LAN)\n", mode.c_str());
++#endif
++}
++
++Emu::LanStatus Emu::lan_status() const {
++    std::lock_guard<std::mutex> l(lan_mu_);
++    return lan_st_;
++}
++
++void Emu::lan_request(LanMode mode, const std::string& addr, int max_players) {
++    std::lock_guard<std::mutex> l(lan_mu_);
++    if (!lan_st_.built) return;
++    if (max_players < 2 || max_players > 16) max_players = lan_st_.max_players;
++    lan_req_.assign(1, LanReq{mode, addr, max_players});
++    // what the menu shows until the emulator's thread has done it
++    lan_st_.mode = mode;
++    lan_st_.state = mode == LanMode::Off ? LanState::Idle : LanState::Busy;
++    lan_st_.msg.clear();
++    lan_st_.players.clear();
++    if (mode == LanMode::Join) lan_st_.addr = addr;
++    if (mode == LanMode::Host) lan_st_.max_players = max_players;
++    lan_pending_.store(true, std::memory_order_release);
++}
++
++void Emu::lan_apply() {
++    if (!lan_pending_.exchange(false, std::memory_order_acq_rel)) return;
++    LanReq r;
++    {
++        std::lock_guard<std::mutex> l(lan_mu_);
++        if (lan_req_.empty()) return;
++        r = lan_req_.back();
++        lan_req_.clear();
++    }
++#ifdef BANANADS_LAN
++    lan_stop();
++    switch (r.mode) {
++        case LanMode::Off: {
++            Log(LogLevel::Info, "[wifi] local wireless: off\n");
++            std::lock_guard<std::mutex> l(lan_mu_);
++            lan_st_.mode = LanMode::Off;
++            lan_st_.state = LanState::Idle;
++            lan_st_.addr.clear();
++            lan_st_.msg.clear();
++            lan_st_.players.clear();
++            lan_st_.hosts.clear();
++            break;
++        }
++        case LanMode::Host: lan_start_host(r.max_players); break;
++        case LanMode::Join:
++            if (r.addr.empty()) lan_start_find("", "");
++            else lan_start_join(r.addr);
++            break;
++    }
++    lan_refresh(true);
++#endif
++}
++
++#ifdef BANANADS_LAN
++static LAN& lan_iface() {
++    if (MPInterface::GetType() != MPInterface_LAN) MPInterface::Set(MPInterface_LAN);
++    return static_cast<LAN&>(MPInterface::Get());
++}
++
++static std::string ipv4(uint32_t host_order) {
++    char b[20];
++    snprintf(b, sizeof b, "%u.%u.%u.%u", host_order >> 24, (host_order >> 16) & 255, (host_order >> 8) & 255,
++             host_order & 255);
++    return b;
++}
++
++// a session started while the game's Wi-Fi is already on (the menu's LAN page, the game in its multiplayer menu):
++// melonDS told the LAN nothing when it powered on (MP_Begin went to no session), so the others would take this
++// handheld's wifi for off. Told now, as at power-on.
++static void lan_wifi_on(LAN& lan, NDS* nds) {
++    if (!nds || !nds->Wifi.IsPoweredOn()) return;
++    lan.Begin(0);
++    Log(LogLevel::Info, "[wifi] local wireless: the game's wifi was already on; the session is told\n");
++}
++
++void Emu::lan_stop() {
++    if (MPInterface::GetType() == MPInterface_LAN) {
++        LAN& lan = static_cast<LAN&>(MPInterface::Get());
++        lan.EndSession();    // (a host's also ends its discovery)
++        lan.EndDiscovery();  // (looking for hosts: the socket closed)
++    }
++    local_ = false;
++    lan_hosts_seen_ = 0;
++    update_mp_active();
++}
++
++bool Emu::lan_start_host(int max_players) {
++    LAN& lan = lan_iface();
++    const std::string nick = cfg_.str("firmware.nickname", "BananaDS");
++    const bool ok = lan.StartHost(nick.c_str(), max_players);
++    Log(ok ? LogLevel::Info : LogLevel::Error, "[wifi] local wireless host: %s (%d players at most)\n",
++        ok ? "ready" : "failed (UDP port 7064 taken?)", max_players);
++    if (ok) {
++        local_ = true;
++        lan_wifi_on(lan, nds_.get());
++    }
++    std::lock_guard<std::mutex> l(lan_mu_);
++    lan_st_.mode = LanMode::Host;
++    lan_st_.state = ok ? LanState::Ready : LanState::Failed;
++    lan_st_.msg = ok ? "" : "Couldn't start a session: UDP port 7064 is taken";
++    lan_st_.max_players = max_players;
++    lan_st_.addr.clear();
++    lan_st_.players.clear();
++    lan_st_.hosts.clear();
++    return ok;
++}
++
++// Join mode before (or after) a session: listen for the hosts' broadcasts (each host every 1 s). A failed join or a
++// lost host comes back here, with what happened in msg
++bool Emu::lan_start_find(const std::string& addr, const std::string& msg) {
++    LAN& lan = lan_iface();
++    const bool ok = lan.StartDiscovery();
++    if (ok) local_ = true;
++    Log(ok ? LogLevel::Info : LogLevel::Error, "[wifi] local wireless join: %s\n",
++        ok ? "looking for hosts on the network" : "can't listen for hosts (UDP port 7063 taken?)");
++    std::lock_guard<std::mutex> l(lan_mu_);
++    lan_st_.mode = LanMode::Join;
++    lan_st_.state = !msg.empty() || !ok ? LanState::Failed : LanState::Idle;
++    lan_st_.msg = !msg.empty() ? msg : ok ? "" : "Can't look for hosts: UDP port 7063 is taken";
++    lan_st_.addr = addr;
++    lan_st_.players.clear();
++    lan_st_.hosts.clear();
++    return ok;
++}
++
++bool Emu::lan_start_join(const std::string& addr) {
++    LAN& lan = lan_iface();
++    const std::string nick = cfg_.str("firmware.nickname", "BananaDS");
++    const uint64_t t0 = now_us();
++    const bool ok = lan.StartClient(nick.c_str(), addr.c_str());  // (up to 5 s)
++    Log(ok ? LogLevel::Info : LogLevel::Error, "[wifi] local wireless join:%s: %s (%.1f s)\n", addr.c_str(),
++        ok ? "ready" : "failed", (now_us() - t0) / 1e6);
++    if (!ok) {
++        lan_start_find(addr, "No answer from " + addr + ", or its session is full");
++        return false;
++    }
++    local_ = true;
++    lan_wifi_on(lan, nds_.get());
++    std::lock_guard<std::mutex> l(lan_mu_);
++    lan_st_.mode = LanMode::Join;
++    lan_st_.state = LanState::Ready;
++    lan_st_.msg.clear();
++    lan_st_.addr = addr;
++    lan_st_.max_players = lan.GetMaxPlayers();
++    lan_st_.players.clear();
++    lan_st_.hosts.clear();
++    return true;
++}
++#endif
++
++void Emu::lan_refresh(bool now) {
+ #ifdef BANANADS_LAN
+-    MPInterface::Set(MPInterface_LAN);
++    const uint64_t t = now_us();
++    if (!now && t - lan_refresh_us_ < 500000) return;
++    lan_refresh_us_ = t;
++    if (!local_ || MPInterface::GetType() != MPInterface_LAN) return;
+     LAN& lan = static_cast<LAN&>(MPInterface::Get());
+-    std::string nick = cfg_.str("firmware.nickname", "BananaDS");
+-    bool ok = false;
+-    if (mode == "host") ok = lan.StartHost(nick.c_str(), (int)cfg_.num("wifi.local_players", 4));
+-    else if (mode.rfind("join:", 0) == 0) ok = lan.StartClient(nick.c_str(), mode.substr(5).c_str());
+-    Log(ok ? LogLevel::Info : LogLevel::Error, "[wifi] local wireless %s: %s\n", mode.c_str(), ok ? "ready" : "failed");
+-    local_ = ok;
++    LanMode mode;
++    LanState state;
++    std::string addr;
++    {
++        std::lock_guard<std::mutex> l(lan_mu_);
++        mode = lan_st_.mode;
++        state = lan_st_.state;
++        addr = lan_st_.addr;
++    }
++    std::vector<LanPlayer> players;
++    bool host_gone = false;
++    for (const LAN::Player& p : lan.GetPlayerList()) {
++        if (p.Status == LAN::Player_Disconnected) {
++            if (p.ID == 0 && mode == LanMode::Join && state == LanState::Ready) host_gone = true;
++            continue;
++        }
++        LanPlayer q;
++        q.name.assign(p.Name, strnlen(p.Name, sizeof p.Name));
++        q.host = p.Status == LAN::Player_Host;
++        q.me = p.IsLocalPlayer;
++        q.ping_ms = q.me || p.Ping == 0 ? -1 : (int)p.Ping;
++        players.push_back(std::move(q));
++    }
++    if (host_gone) {  // the host quit, or the network lost it: back to looking for hosts
++        Log(LogLevel::Info, "[wifi] local wireless join:%s: the host is gone\n", addr.c_str());
++        lan_stop();
++        lan_start_find(addr, "The host left, or the network lost it");
++        return;
++    }
++    std::vector<LanHost> hosts;
++    if (mode == LanMode::Join && state != LanState::Ready)
++        for (const auto& [ip, d] : lan.GetDiscoveryList())
++            hosts.push_back(LanHost{std::string(d.SessionName, strnlen(d.SessionName, sizeof d.SessionName)),
++                                    ipv4(ip), d.NumPlayers, d.MaxPlayers});
++    if (hosts.size() != lan_hosts_seen_) {
++        lan_hosts_seen_ = hosts.size();
++        std::string l;
++        for (const LanHost& h : hosts)
++            l += (l.empty() ? "" : ", ") + h.name + " at " + h.addr + " (" + std::to_string(h.players) + "/" +
++                 std::to_string(h.max) + ")";
++        Log(LogLevel::Info, "[wifi] local wireless join: %zu host%s found%s%s\n", hosts.size(),
++            hosts.size() == 1 ? "" : "s", l.empty() ? "" : ": ", l.c_str());
++    }
++    std::lock_guard<std::mutex> l(lan_mu_);
++    if (lan_pending_.load(std::memory_order_acquire)) return;  // (a newer request: what it shows stays)
++    lan_st_.players = std::move(players);
++    lan_st_.hosts = std::move(hosts);
+ #else
+-    Log(LogLevel::Warn, "[wifi] wifi.local=%s, but this build has no local wireless (BANANADS_LAN)\n", mode.c_str());
++    (void)now;
+ #endif
+ }
+ 
+@@ -745,8 +959,10 @@ void Emu::setup_slice() {
+ void Emu::service_net() {
+ #ifdef BANANADS_LAN
+     std::lock_guard<std::mutex> g(net_mu_);
++    lan_apply();
+     if (local_) MPInterface::Get().Process();
+     update_mp_active();
++    lan_refresh(false);
+ #endif
+ }
+ 
+@@ -779,6 +995,10 @@ void Emu::write_firmware(const melonDS::Firmware& fw) {
+ 
+ void Emu::run_frame() {
+ #ifdef BANANADS_LAN
++    if (lan_pending_.load(std::memory_order_acquire)) {  // the menu's LAN page asked for something
++        std::lock_guard<std::mutex> g(net_mu_);
++        lan_apply();
++    }
+     if (local_) MPInterface::Get().Process();
+ #endif
+     if (const double sk = skew_req_.load(std::memory_order_relaxed); sk != skew_cur_) {
+@@ -793,7 +1013,10 @@ void Emu::run_frame() {
+         swaps3d_.fetch_add(1, std::memory_order_relaxed);
+     }
+     flush_save(false);
+-    if (local_) update_mp_active();
++    if (local_) {
++        update_mp_active();
++        lan_refresh(false);
++    }
+     if (slice_stats_ > 0 && ++slice_frames_ % slice_stats_ == 0) {
+         // the share of emulated time within core.slice_hold cycles of an IPC access (where the short slice runs)
+         const double near = 100.0 * (double)nds_->SliceNearIPCCycles / (560190.0 * (double)slice_stats_);
+diff --git a/bananads/src/emu.h b/bananads/src/emu.h
+index 55ae0bc..69ecc84 100644
+--- a/bananads/src/emu.h
++++ b/bananads/src/emu.h
+@@ -80,6 +80,27 @@ public:
+     // player connected while the game's Wi-Fi is in a multiplayer mode). Updated on the emulator's thread after
+     // each frame and each service_net; any thread may ask (the menu turns Save, Load and Restart off)
+     bool mp_active() const { return mp_active_.load(std::memory_order_relaxed); }
++
++    // ---- wifi.local from the in-game menu (Quick settings > LAN multiplayer) ----
++    // The menu asks from its own thread; the emulator's thread carries it out between two frames or in the paused
++    // menu's service loop (service_net), never while another thread runs the game. Joining waits up to 5 s for the
++    // host (melonDS's StartClient): the state says Busy meanwhile, and the menu stays usable.
++    enum class LanMode { Off, Host, Join };            // Join: looking for hosts, then in one host's session
++    enum class LanState { Idle, Busy, Ready, Failed };  // Idle: off, or looking; Ready: hosting, or joined
++    struct LanPlayer { std::string name; bool host = false, me = false; int ping_ms = -1; };
++    struct LanHost { std::string name, addr; int players = 0, max = 0; };
++    struct LanStatus {
++        bool built = false;          // this build has local wireless (BANANADS_LAN)
++        LanMode mode = LanMode::Off;
++        LanState state = LanState::Idle;
++        std::string addr;            // Join: the host's address (joined, joining, or the one that failed)
++        std::string msg;             // Failed: what went wrong
++        int max_players = 4;         // Host: how many may be in the session, us included (2-16)
++        std::vector<LanPlayer> players;  // the session's players, us included (Ready)
++        std::vector<LanHost> hosts;      // Join, not joined: the hosts found on the network (each says so every 1 s)
++    };
++    LanStatus lan_status() const;             // any thread: a copy
++    void lan_request(LanMode mode, const std::string& addr = "", int max_players = 0);  // any thread
+     std::string state_path(int slot) const;
+ 
+     Mic& mic() { return mic_; }
+@@ -112,6 +133,14 @@ private:
+     void setup_slice();
+     void set_clock();
+     void update_mp_active();
++    void lan_apply();      // the menu's wifi.local request, if any (emulator thread, net_mu_ held)
++    void lan_refresh(bool now);  // lan_st_'s players and hosts from melonDS's LAN, twice a second (same)
++#ifdef BANANADS_LAN
++    void lan_stop();                                  // the session ended, discovery off (same)
++    bool lan_start_host(int max_players);
++    bool lan_start_find(const std::string& addr, const std::string& msg);
++    bool lan_start_join(const std::string& addr);
++#endif
+ 
+     std::atomic<double> skew_req_{1.0};
+     std::atomic<long> swaps3d_{0};
+@@ -129,6 +158,13 @@ private:
+     std::string wfc_path_;             // wifi.wfc_settings: where the WFC settings are kept ("" off)
+     std::vector<uint8_t> wfc_last_;    // the settings as last loaded or saved (a write that changes nothing: no file)
+     std::mutex net_mu_;  // service_net() against the menu thread's save_state/load_state/restart (LAN Begin/End)
++    mutable std::mutex lan_mu_;   // lan_st_ and lan_req_ (the menu's thread and the emulator's)
++    LanStatus lan_st_;
++    struct LanReq { LanMode mode; std::string addr; int max_players; };
++    std::vector<LanReq> lan_req_;            // the menu's latest request (at most one kept)
++    std::atomic<bool> lan_pending_{false};
++    uint64_t lan_refresh_us_ = 0;
++    size_t lan_hosts_seen_ = 0;              // (the log: hosts found)
+     int scale_ = 1;
+     melonDS::BananaRenderer* banana_ = nullptr;  // the renderer, when it's the Banana 2D engine's
+     std::unique_ptr<uint8_t[]> save_copy_;
