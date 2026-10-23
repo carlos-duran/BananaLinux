@@ -143,4 +143,7 @@ wins over the file and would freeze the settings screen's choices. Both launcher
 `/data/banana/bananads.env` (shell assignments) adds settings for every run, e.g. `BANANADS_KMS_STATS=600` (the
 frame statistics in the log) or `BANANADS_POWER_CPU_LATENCY_US=100` (the cores kept out of deep idle while a game
 runs: ~1.5% faster, a battery cost not measured yet). BananaDS needs no BIOS or firmware files (melonDS's FreeBIOS and a
-generated firmware).
+generated firmware). The generated firmware keeps two things in `/data/bananads`, which must not be deleted: `wfcsettings.bin`
+(the Nintendo WFC settings a game writes, 2304 bytes as desktop melonDS keeps them: without it every launch asked for
+a new WFC ID and friend code) and `wifi-mac` (the DS's MAC, 00:09:BF and three bytes from the eMMC's CID, so two
+handhelds never share one in local wireless play; `wifi.mac` overrides it).

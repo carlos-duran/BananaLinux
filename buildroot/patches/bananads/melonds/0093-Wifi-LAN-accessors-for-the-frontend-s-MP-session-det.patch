@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: BananaDS <bananads@localhost>
+Date: Fri, 23 Oct 2026 12:00:00 +0000
+Subject: [PATCH 93/94] Wifi, LAN: accessors for the frontend's MP-session
+ detection
+
+Wifi::InMPMode() and LAN::GetMPActiveBitmask()/GetOtherPlayersBitmask(), read by the frontend to know when a
+local wireless game is running.
+---
+ src/Wifi.h    | 2 ++
+ src/net/LAN.h | 5 +++++
+ 2 files changed, 7 insertions(+)
+
+diff --git a/src/Wifi.h b/src/Wifi.h
+index 61d7535..d643b7a 100644
+--- a/src/Wifi.h
++++ b/src/Wifi.h
+@@ -172,6 +172,8 @@ public:
+ 
+     const u8* GetMAC() const;
+     const u8* GetBSSID() const;
++    // BananaDS: the game's Wi-Fi is in a local multiplayer mode (host beaconing or client synced)
++    bool InMPMode() const { return IsMP; }
+ 
+ private:
+     melonDS::NDS& NDS;
+diff --git a/src/net/LAN.h b/src/net/LAN.h
+index b08780c..dfbc3fe 100644
+--- a/src/net/LAN.h
++++ b/src/net/LAN.h
+@@ -107,6 +107,11 @@ public:
+     int RecvHostPacket(int inst, u8* data, u64* timestamp) override;
+     u16 RecvReplies(int inst, u8* data, u64 timestamp, u16 aidmask) override;
+ 
++    // BananaDS (the frontend's menu, on the emulator's thread): the players in a local wireless game with us
++    // (MPActiveBitmask), and the other players connected at all (ENet)
++    u16 GetMPActiveBitmask() const noexcept { return MPActiveBitmask; }
++    u16 GetOtherPlayersBitmask() const noexcept { return (u16)(ConnectedBitmask & ~(1u << MyPlayer.ID)); }
++
+ private:
+     bool Inited;
+     bool Active;
+-- 
+2.47.3
+

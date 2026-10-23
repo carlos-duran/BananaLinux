@@ -1,0 +1,679 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: BananaDS <bananads@localhost>
+Subject: [PATCH] BananaDS: WFC settings kept, a DS MAC of its own per console,
+ no states in local wireless play
+
+- Platform::WriteFirmware saves wfcsettings.bin (2304 bytes, desktop melonDS's layout) atomically, so the WFC
+  ID survives a restart.
+- The DS MAC: wifi.mac, else the saved wifi-mac file, else the eMMC CID, wlan0's MAC or random, always
+  00:09:BF and never changed once saved (kept for an existing wfcsettings.bin).
+- In a local wireless game (Emu::mp_active) the menu greys out Save state, Load state and Restart, and the
+  save/load hotkeys say why. Adds melonDS patch 0093 (the accessors it reads).
+---
+ bananads/docs/SETTINGS.md     |   5 +-
+ bananads/src/emu.cpp          |  62 ++++++++-
+ bananads/src/emu.h            |  12 +-
+ bananads/src/frontend_kms.cpp |  26 +++-
+ bananads/src/menu.c           |  17 +++
+ bananads/src/menu.h           |   3 +
+ bananads/src/platform.cpp     |   6 +-
+ bananads/src/wifi.cpp         | 235 ++++++++++++++++++++++++++++++++++
+ bananads/src/wifi.h           |  35 ++++-
+ 9 files changed, 388 insertions(+), 13 deletions(-)
+
+diff --git a/bananads/docs/SETTINGS.md b/bananads/docs/SETTINGS.md
+index 5b49a95..95e3e3b 100644
+--- a/bananads/docs/SETTINGS.md
++++ b/bananads/docs/SETTINGS.md
+@@ -80,6 +80,9 @@ key can also come from the environment as `BANANADS_<KEY>` (dots become undersco
+ | `wifi.dns` | `kaeru` | `kaeru`, `altwfc`, `wiilink`, an IPv4 address, `system` (the handheld's own DNS) or `off` (no Wi-Fi at all) |
+ | `wifi.local` | `off` | `host`, or `join:<the host's address>`: local wireless with another handheld (builds with `BANANADS_LAN`) |
+ | `wifi.local_players` | `4` | how many can join a host |
++| `wifi.mac` | (none) | the DS's MAC (`00:09:bf:12:34:56`), over the saved one (not saved itself) |
++| `wifi.mac_file` | `wifi-mac` | where the DS's MAC is kept (under `BANANADS_DATA`; `off`: not kept). Made once (from the eMMC's CID, else wlan0's MAC, else at random; the old 00:09:BF:11:22:33 if WFC settings were saved before it) and never changed |
++| `wifi.wfc_settings` | `wfcsettings.bin` | where the Nintendo WFC settings the game writes (its WFC ID) are kept between sessions, melonDS's 2304-byte file (under `BANANADS_DATA`; `off`: not kept, a new WFC ID every session) |
+ | `mic.source` | `device` | `device` (ALSA or SDL capture) or `none` (only the menu's Blow) |
+ | `mic.device` | `default` | the ALSA capture device |
+ | `mic.threshold` | `0.05` | how far above the room's noise a sound must be to reach the game (full scale 1). Settings > Nintendo DS > Microphone: High 0.02, Medium 0.05, Low 0.15 (a blow, hardly a word). `0` turns the gate off |
+@@ -101,7 +104,7 @@ key can also come from the environment as `BANANADS_<KEY>` (dots become undersco
+ | `sdl.refresh` | `60` | the presents per second with `sdl.vsync=off` (the display's refresh: the RG DS Plus's panels run at 60.003 Hz) |
+ | `kms.top` | `$BANANADS_TOP`, else `DSI-2` | the connector of the panel that shows the top screen; the other connected panel of the same type shows the bottom one (`Virtual-2` in QEMU) |
+ | `kms.touch` | `$BANANADS_TOUCH`, else `fe5e0000.i2c` | the bottom panel's touchscreen: the input device whose sysfs path contains this |
+-| `kms.menu` | `on` | the in-game menu (src/menu.c: SuperDrastic's, in BananaOS's colours): L3 pauses the game and opens it on both panels. Resume, Save and Load (8 slots with pictures; a load can be undone), Quick settings (volume, brightness, the microphone's meter and a blow), Restart game, Quit game. `kms.menu_test=<n>` opens it 3 s in, on the main page (1), Save (2), Load (3), Quick settings (4) or the quit question (5), for tests |
++| `kms.menu` | `on` | the in-game menu (src/menu.c: SuperDrastic's, in BananaOS's colours): L3 pauses the game and opens it on both panels. Resume, Save and Load (8 slots with pictures; a load can be undone), Quick settings (volume, brightness, the microphone's meter and a blow), Restart game, Quit game; in a local wireless game (`wifi.local`, another handheld in it) Save, Load and Restart game are off, as are F + R / F + L. `kms.menu_test=<n>` opens it 3 s in, on the main page (1), Save (2), Load (3), Quick settings (4) or the quit question (5), for tests |
+ | `kms.queue` | `2` | the most finished frames waiting for the screen (1-3); past that the oldest is dropped. Frames are committed one per refresh, so a game whose frames take 19 and 12 ms in turn still shows a new one at every refresh |
+ | `kms.rt` | `on` | the presenter (the thread that commits the frames) at `SCHED_FIFO` 5, below the sound thread, as SuperDrastic's: a late wake-up finds the last flip still pending and the frame waits a refresh |
+ | `kms.stats` | `0` | every this many frames shown, log the rate of new frames on the panels, the frames emulated per second, the refreshes that showed no new frame and the frames dropped |
+diff --git a/bananads/src/emu.cpp b/bananads/src/emu.cpp
+index 04317b2..1e45241 100644
+--- a/bananads/src/emu.cpp
++++ b/bananads/src/emu.cpp
+@@ -6,6 +6,7 @@
+ #include <sys/stat.h>
+ #include <unistd.h>
+ 
++#include <cerrno>
+ #include <cstdio>
+ #include <cstring>
+ #include <ctime>
+@@ -311,7 +312,19 @@ bool Emu::load_rom(const std::string& path) {
+ #endif
+ 
+     auto& hdr = args.Firmware.GetHeader();
+-    auto mac = wifi_mac();
++    // the DS's MAC, one per handheld and kept (wifi.h choose_wifi_mac), and the Nintendo WFC settings the game saved
++    // last time (wifi.wfc_settings, melonDS's wfcsettings.bin): without them the game makes a new WFC ID (a new
++    // friend code) at the first connection of every session
++    {
++        const std::string wfc = cfg_.str("wifi.wfc_settings", "wfcsettings.bin");
++        wfc_path_ = wfc == "off" ? "" : Platform::GetLocalFilePath(wfc);
++    }
++    const std::string mac_file_set = cfg_.str("wifi.mac_file", "wifi-mac");
++    const WifiMac wm = choose_wifi_mac(cfg_.str("wifi.mac", ""),
++                                       mac_file_set == "off" ? "" : Platform::GetLocalFilePath(mac_file_set),
++                                       wfc_path_);
++    const auto mac = wm.mac;
++    Log(LogLevel::Info, "[wifi] the DS's MAC: %s (%s)\n", format_mac(mac).c_str(), wm.source.c_str());
+     memcpy(hdr.MacAddr.data(), mac.data(), 6);
+     auto& user = args.Firmware.GetEffectiveUserData();
+     std::string nick = cfg_.str("firmware.nickname", "BananaDS");
+@@ -319,7 +332,25 @@ bool Emu::load_rom(const std::string& path) {
+     for (size_t i = 0; i < user.NameLength; i++) user.Nickname[i] = (char16_t)(unsigned char)nick[i];
+     long lang = cfg_.num("firmware.language", -1);  // 0 ja, 1 en, 2 fr, 3 de, 4 it, 5 es
+     if (lang >= 0 && lang <= 5) user.Settings = (u16)((user.Settings & ~7) | lang);
++    if (!wfc_path_.empty()) {
++        const int r = wfc_settings_load(args.Firmware, wfc_path_);
++        if (r > 0) {
++            bool id = false;
++            for (const auto& ap : args.Firmware.GetAccessPoints())
++                for (u8 b : ap.NintendoWFCID) id |= b != 0;
++            Log(LogLevel::Info, "[wifi] WFC settings loaded from %s (%s)\n", wfc_path_.c_str(),
++                id ? "with a Nintendo WFC ID" : "no Nintendo WFC ID yet");
++        } else if (r == 0)
++            Log(LogLevel::Info, "[wifi] no WFC settings saved yet (%s): the game makes them at its first WFC "
++                "connection\n", wfc_path_.c_str());
++    }
+     args.Firmware.UpdateChecksums();
++    wfc_last_.clear();
++    if (!wfc_path_.empty() && !wfc_settings_get(args.Firmware, wfc_last_)) {
++        Log(LogLevel::Warn, "[wifi] the generated firmware's access points aren't where they should be: the WFC "
++            "settings won't be kept\n");
++        wfc_path_.clear();
++    }
+ 
+     // jit.iofast=on|off sets MELONDS_IOFAST (melonDS patch 0005: the JIT slow paths' direct routes for main RAM,
+     // the GX FIFO and IE/IF/IME/DISPSTAT/VCOUNT/KEYINPUT), which the NDS reads as it's created; unset, the
+@@ -715,9 +746,37 @@ void Emu::service_net() {
+ #ifdef BANANADS_LAN
+     std::lock_guard<std::mutex> g(net_mu_);
+     if (local_) MPInterface::Get().Process();
++    update_mp_active();
++#endif
++}
++
++void Emu::update_mp_active() {
++#ifdef BANANADS_LAN
++    bool on = false;
++    if (local_ && nds_) {
++        const LAN& lan = static_cast<const LAN&>(MPInterface::Get());
++        on = lan.GetMPActiveBitmask() != 0 || (lan.GetOtherPlayersBitmask() != 0 && nds_->Wifi.InMPMode());
++    }
++    if (on != mp_active_.load(std::memory_order_relaxed)) {
++        mp_active_.store(on, std::memory_order_relaxed);
++        Log(LogLevel::Info, "[wifi] local wireless game %s\n", on ? "on: the menu's Save, Load and Restart are off"
++                                                                   : "over");
++    }
+ #endif
+ }
+ 
++void Emu::write_firmware(const melonDS::Firmware& fw) {
++    if (wfc_path_.empty()) return;
++    if (fw.GetHeader().Identifier != GENERATED_FIRMWARE_IDENTIFIER) return;  // (a real firmware isn't ours to keep)
++    std::vector<uint8_t> now;
++    if (!wfc_settings_get(fw, now) || now == wfc_last_) return;
++    if (write_file_durable(wfc_path_, now.data(), now.size())) {
++        wfc_last_ = std::move(now);
++        Log(LogLevel::Info, "[wifi] WFC settings saved to %s\n", wfc_path_.c_str());
++    } else
++        Log(LogLevel::Warn, "[wifi] couldn't save the WFC settings to %s (%s)\n", wfc_path_.c_str(), strerror(errno));
++}
++
+ void Emu::run_frame() {
+ #ifdef BANANADS_LAN
+     if (local_) MPInterface::Get().Process();
+@@ -734,6 +793,7 @@ void Emu::run_frame() {
+         swaps3d_.fetch_add(1, std::memory_order_relaxed);
+     }
+     flush_save(false);
++    if (local_) update_mp_active();
+     if (slice_stats_ > 0 && ++slice_frames_ % slice_stats_ == 0) {
+         // the share of emulated time within core.slice_hold cycles of an IPC access (where the short slice runs)
+         const double near = 100.0 * (double)nds_->SliceNearIPCCycles / (560190.0 * (double)slice_stats_);
+diff --git a/bananads/src/emu.h b/bananads/src/emu.h
+index f9c1166..55ae0bc 100644
+--- a/bananads/src/emu.h
++++ b/bananads/src/emu.h
+@@ -15,7 +15,7 @@
+ #include "mic.h"
+ #include "prof.h"
+ 
+-namespace melonDS { class NDS; class Net; class BananaRenderer; }
++namespace melonDS { class NDS; class Net; class BananaRenderer; class Firmware; }
+ 
+ namespace bananads {
+ // with log.time: "[start] <what>" in the log, the start of a game timed step by step (platform.cpp)
+@@ -76,6 +76,10 @@ public:
+     // frontend does every 75 ms while paused; otherwise ENet times the peers out after 5-30 s and the LAN session
+     // is lost for good. Emulator thread; serialised with the menu's save_state/load_state/restart (net_mu_)
+     void service_net();
++    // wifi.local: another handheld is in a local wireless game with this one (LAN's MP-active players, or another
++    // player connected while the game's Wi-Fi is in a multiplayer mode). Updated on the emulator's thread after
++    // each frame and each service_net; any thread may ask (the menu turns Save, Load and Restart off)
++    bool mp_active() const { return mp_active_.load(std::memory_order_relaxed); }
+     std::string state_path(int slot) const;
+ 
+     Mic& mic() { return mic_; }
+@@ -93,6 +97,8 @@ public:
+ 
+     // Platform callbacks (platform.cpp) reach the emulator through these.
+     void write_save(const uint8_t* data, uint32_t len, uint32_t off, uint32_t n);
++    // the game wrote the firmware (Platform::WriteFirmware): the WFC settings out to wifi.wfc_settings if changed
++    void write_firmware(const melonDS::Firmware& fw);
+     melonDS::Net* net() { return net_.get(); }
+     void stop_requested() { stop_ = true; }
+     bool stopped() const { return stop_; }
+@@ -105,6 +111,7 @@ private:
+     void flush_save(bool now);
+     void setup_slice();
+     void set_clock();
++    void update_mp_active();
+ 
+     std::atomic<double> skew_req_{1.0};
+     std::atomic<long> swaps3d_{0};
+@@ -118,6 +125,9 @@ private:
+     std::string rom_path_, save_path_, game_;
+     bool stop_ = false;
+     bool local_ = false;
++    std::atomic<bool> mp_active_{false};
++    std::string wfc_path_;             // wifi.wfc_settings: where the WFC settings are kept ("" off)
++    std::vector<uint8_t> wfc_last_;    // the settings as last loaded or saved (a write that changes nothing: no file)
+     std::mutex net_mu_;  // service_net() against the menu thread's save_state/load_state/restart (LAN Begin/End)
+     int scale_ = 1;
+     melonDS::BananaRenderer* banana_ = nullptr;  // the renderer, when it's the Banana 2D engine's
+diff --git a/bananads/src/frontend_kms.cpp b/bananads/src/frontend_kms.cpp
+index a316a92..2ba24d7 100644
+--- a/bananads/src/frontend_kms.cpp
++++ b/bananads/src/frontend_kms.cpp
+@@ -940,6 +940,8 @@ static void mh_state_file(void* c, int slot, char* out, int n) {
+     snprintf(out, n, "%s", ((MenuHost*)c)->emu->state_path(slot).c_str());
+ }
+ static void mh_quit(void* c) { ((MenuHost*)c)->quit = true; }
++// a local wireless game on (Emu::mp_active): the menu's Save, Load and Restart game are off
++static int mh_mp_lock(void* c) { return ((MenuHost*)c)->emu->mp_active() ? 1 : 0; }
+ static void mh_restart(void* c) {
+     cpugov_boost(2000);
+     ((MenuHost*)c)->emu->restart();
+@@ -1216,6 +1218,7 @@ int run_kms(Emu& emu, const Config& cfg) {
+         h.state_file = mh_state_file;
+         h.quit = mh_quit;
+         h.restart = mh_restart;
++        h.mp_lock = mh_mp_lock;
+         h.blow = mh_blow;
+         h.mic_meter = mh_mic_meter;
+         h.sound_load = mh_sound_load;
+@@ -1295,13 +1298,22 @@ int run_kms(Emu& emu, const Config& cfg) {
+                 paused = false;
+                 continue;
+             }
+-            if (int s = in_save.exchange(0)) {
+-                cpugov_boost(3000);
+-                emu.save_state(s);
+-            }
+-            if (int s = in_load.exchange(0)) {
+-                cpugov_boost(3000);
+-                emu.load_state(s);
++            {
++                const int sv = in_save.exchange(0), ld = in_load.exchange(0);
++                if ((sv || ld) && emu.mp_active()) {
++                    // F + R / F + L in a local wireless game: off, as the menu's Save and Load (a load breaks it)
++                    Log(LogLevel::Info, "[kms] F + %s: off in a local wireless game\n", sv ? "R" : "L");
++                    bmenu_popup("Not during a local wireless game", "Savestates are off until it ends", 2500);
++                } else {
++                    if (sv) {
++                        cpugov_boost(3000);
++                        emu.save_state(sv);
++                    }
++                    if (ld) {
++                        cpugov_boost(3000);
++                        emu.load_state(ld);
++                    }
++                }
+             }
+             if (const int f = g_ff.load(std::memory_order_relaxed); f != ff) {
+                 ff = f;
+diff --git a/bananads/src/menu.c b/bananads/src/menu.c
+index 57ee4c4..e7e1090 100644
+--- a/bananads/src/menu.c
++++ b/bananads/src/menu.c
+@@ -733,6 +733,12 @@ static rect pill(canvas *c, int x, int y, int right, const char *k, const char *
+ }
+ static const char *const IC_RESTART[12] = { "............", "....####.#..", "...#....##..", "..#....###..", ".#..........", ".#..........",
+     ".#..........", ".#........#.", "..#......#..", "...#....#...", "....####....", "............" };
++/* a local wireless game (H.mp_lock, looked at as the menu opens): Save, Load and Restart game are off, the
++ * session would break (a load or a restart drops the other handhelds, and the game can't take its state back);
++ * Resume, Quick settings and Quit game stay. off_note_until: the reason in the header for a moment, after A on one */
++static int mp_locked;
++static long long off_note_until;
++static int tile_off(int i) { return mp_locked && (i == 1 || i == 2 || i == 4); }
+ static const char *tile_label[6] = { "Resume", "Save", "Load", "Quick settings", "Restart game", "Quit game" };
+ static const char *const *tile_icon[6] = { IC_PLAY, IC_SAVE, IC_LOAD, IC_SLIDERS, IC_RESTART, IC_EXIT };
+ 
+@@ -777,6 +783,7 @@ static void draw_bottom(void) {
+     }
+     if (s == SC_MAIN) {
+         char sub[120]; snprintf(sub, sizeof sub, "%s", gtitle);
++        if (off_note_until) snprintf(sub, sizeof sub, "%s", "Not during a local wireless game");
+         draw_header(c, "Paused", sub, 0);
+         int gap = S(12), tw = (gx1 - gx0 - 2 * gap) / 3, th = (gy1 - gy0 - gap) / 2;
+         int nb = newest_slot();
+@@ -785,6 +792,7 @@ static void draw_bottom(void) {
+             R_TILE[i] = (rect){ x, y, x + tw, y + th };
+             uint32_t bd = sel ? (red ? C_REDL : C_LIGHT) : (red ? C_REDDIM : C_BORDER), bg = sel ? (red ? C_RED : C_BLUE) : C_PANEL;
+             uint32_t fg = sel ? (red ? 0xffffff : C_ONSEL) : (red ? C_REDL : C_LIGHT), sub2 = sel ? (red ? 0xffd6dc : C_ONSELSUB) : (red ? 0xc98a92 : C_GREY);
++            if (tile_off(i)) { fg = sel ? C_ONSELSUB : C_DIM; sub2 = sel ? C_ONSELSUB : C_DIM; }
+             box(c, x, y, x + tw, y + th, S(14), bw, bd, bg);
+             int k = S(4) < 2 ? 2 : S(4);
+             bitmap(c, tile_icon[i], 12, x + (tw - 12 * k) / 2, y + S(24), k, fg);
+@@ -798,6 +806,7 @@ static void draw_bottom(void) {
+             case 4: snprintf(h, sizeof h, "from the title screen"); break;
+             case 5: snprintf(h, sizeof h, H.resume_on ? "keeps your spot" : "back to the menu"); break;
+             }
++            if (tile_off(i)) snprintf(h, sizeof h, "not in local wireless");
+             text(c, &F_REG, h, x + tw / 2.0f, y + S(118), S(14), sub2, tw - S(16), 1);
+         }
+     } else if (s == SC_SAVE || s == SC_LOAD) {
+@@ -1015,6 +1024,11 @@ static void back(void);
+ static void activate(void) {
+     switch (scr) {
+     case SC_MAIN:
++        if (tile_off(sel_main)) {   /* off in a local wireless game: the reason, no action */
++            play(SND_BACK); off_note_until = now_ms() + 2500; dirty_bot = 1;
++            mlog("[menu] %s is off in a local wireless game\n", tile_label[sel_main]);
++            break;
++        }
+         switch (sel_main) {
+         case 0: play(SND_BACK); close_menu(); break;
+         case 1: case 2: {
+@@ -1163,6 +1177,8 @@ int bmenu_run(int start) {
+     boost(800);
+     open_ = 1; scr = SC_MAIN; sel_main = 0; held_dir = 0;
+     bri_changed = 0; make_rows();
++    mp_locked = H.mp_lock && H.mp_lock(H.ctx); off_note_until = 0;
++    if (mp_locked) mlog("[menu] a local wireless game: Save, Load and Restart game are off\n");
+     scan_slots(0);
+     load_recent();
+     grab_background();
+@@ -1178,6 +1194,7 @@ int bmenu_run(int start) {
+         { static long long mt; if (scr == SC_MIC && now_ms() - mt >= 33) { mt = now_ms(); dirty_bot = 1; } }   /* the meter moves */
+         { static long long vt; if (scr == SC_SET && now_ms() - vt >= 500) { vt = now_ms(); want_ex(-1, -1, 1); }   /* the volume keys' */
+           int r = vol_read; if (r >= 0) { vol_read = -1; if (scr == SC_SET && r != vol && now_ms() - vol_set_at > 1500) { vol = r; dirty_bot = 1; } } }
++        if (off_note_until && now_ms() >= off_note_until) { off_note_until = 0; dirty_bot = 1; }
+         if (now_ms() - clock_t0 >= 15000) { clock_t0 = now_ms(); if (scr == SC_MAIN || scr == SC_SET || scr == SC_QUIT) dirty_top = 1; }   /* the clock */
+         /* RetroAchievements finishes its login and the game's lookup 10-15 s after a start: a menu opened before that
+          * had no achievements on its top screen until it was opened again. Looked at twice a second while open. */
+diff --git a/bananads/src/menu.h b/bananads/src/menu.h
+index f61dde8..6a2c558 100644
+--- a/bananads/src/menu.h
++++ b/bananads/src/menu.h
+@@ -56,6 +56,9 @@ typedef struct {
+     const char* (*cheat_name)(void* ctx, int i);
+     int (*cheat_get)(void* ctx, int i);
+     void (*cheat_set)(void* ctx, int i, int on);
++    // 1: a local wireless game is on (wifi.local, another handheld in it): Save, Load and Restart game are off, as a
++    // load or a restart would break it. Asked as the menu opens; unset: never
++    int (*mp_lock)(void* ctx);
+ } bmenu_host;
+ 
+ void bmenu_init(const bmenu_host* host);  // once, before the first bmenu_run
+diff --git a/bananads/src/platform.cpp b/bananads/src/platform.cpp
+index 7208a3f..919fcd4 100644
+--- a/bananads/src/platform.cpp
++++ b/bananads/src/platform.cpp
+@@ -201,7 +201,11 @@ void WriteNDSSave(const u8* data, u32 len, u32 off, u32 n, void* userdata) {
+     if (userdata) Emu::from(userdata)->write_save(data, len, off, n);
+ }
+ void WriteGBASave(const u8*, u32, u32, u32, void*) {}       // no GBA slot on the handhelds
+-void WriteFirmware(const Firmware&, u32, u32, void*) {}      // the firmware is generated at every start
++// The firmware is generated at every start; of what the game writes into it only the Wi-Fi access points (with
++// the Nintendo WFC ID) are kept, in wifi.wfc_settings (Emu::write_firmware), as melonDS's own frontend does
++void WriteFirmware(const Firmware& fw, u32, u32, void* userdata) {
++    if (userdata) Emu::from(userdata)->write_firmware(fw);
++}
+ void WriteDateTime(int, int, int, int, int, int, void*) {}   // the DS's clock follows the handheld's
+ 
+ // --- local wireless (DS to DS) ---
+diff --git a/bananads/src/wifi.cpp b/bananads/src/wifi.cpp
+index 368f65d..494f7b8 100644
+--- a/bananads/src/wifi.cpp
++++ b/bananads/src/wifi.cpp
+@@ -4,16 +4,26 @@
+ #include <fcntl.h>
+ #include <netinet/in.h>
+ #include <sys/socket.h>
++#include <dirent.h>
++#include <sys/random.h>
++#include <sys/stat.h>
+ #include <unistd.h>
+ 
+ #include <algorithm>
++#include <cctype>
++#include <cerrno>
+ #include <cstring>
++#include <cstdio>
++#include <ctime>
+ #include <fstream>
+ 
+ #include "Platform.h"
+ 
+ using melonDS::Platform::Log;
+ using melonDS::Platform::LogLevel;
++using melonDS::u8;
++using melonDS::u16;
++using melonDS::u32;
+ 
+ namespace bananads {
+ 
+@@ -42,6 +52,231 @@ std::array<uint8_t, 6> wifi_mac() {
+     return wifi_mac_from_id(id);
+ }
+ 
++// ---- the DS's MAC --------------------------------------------------------------------------------------------
++
++bool parse_mac(const std::string& s, std::array<uint8_t, 6>& out) {
++    std::array<uint8_t, 6> m{};
++    size_t p = 0;
++    for (int i = 0; i < 6; i++) {
++        while (p < s.size() && (s[p] == ' ' || s[p] == '\t')) p++;
++        if (i && p < s.size() && (s[p] == ':' || s[p] == '-')) p++;
++        unsigned v = 0;
++        int n = 0;
++        while (n < 2 && p < s.size() && isxdigit((unsigned char)s[p])) {
++            v = v * 16 + (unsigned)(isdigit((unsigned char)s[p]) ? s[p] - '0' : (tolower((unsigned char)s[p]) - 'a' + 10));
++            p++;
++            n++;
++        }
++        if (n != 2) return false;
++        m[i] = (uint8_t)v;
++    }
++    while (p < s.size() && (s[p] == ' ' || s[p] == '\t' || s[p] == '\r' || s[p] == '\n')) p++;
++    if (p != s.size()) return false;
++    if (m[0] & 1) return false;  // a multicast address can't be a station's
++    bool zero = true, ones = true;
++    for (uint8_t b : m) { zero &= b == 0; ones &= b == 0xFF; }
++    if (zero || ones) return false;
++    out = m;
++    return true;
++}
++
++std::string format_mac(const std::array<uint8_t, 6>& m) {
++    char b[24];
++    snprintf(b, sizeof b, "%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5]);
++    return b;
++}
++
++static std::string first_line(const std::string& path) {
++    std::ifstream f(path);
++    std::string l;
++    if (f) std::getline(f, l);
++    while (!l.empty() && (l.back() == '\r' || l.back() == ' ' || l.back() == '\t')) l.pop_back();
++    return l;
++}
++
++static bool exists(const std::string& p) { return access(p.c_str(), F_OK) == 0; }
++
++bool write_file_durable(const std::string& path, const void* data, size_t len) {
++    const std::string tmp = path + ".tmp";
++    int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
++    if (fd < 0) return false;
++    const uint8_t* p = (const uint8_t*)data;
++    size_t done = 0;
++    while (done < len) {
++        ssize_t n = write(fd, p + done, len - done);
++        if (n <= 0) {
++            close(fd);
++            unlink(tmp.c_str());
++            return false;
++        }
++        done += (size_t)n;
++    }
++    if (fsync(fd) != 0 || close(fd) != 0) {
++        unlink(tmp.c_str());
++        return false;
++    }
++    if (rename(tmp.c_str(), path.c_str()) != 0) {
++        unlink(tmp.c_str());
++        return false;
++    }
++    size_t s = path.find_last_of('/');
++    const std::string dir = s == std::string::npos ? "." : s == 0 ? "/" : path.substr(0, s);
++    int d = open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
++    if (d >= 0) {
++        fsync(d);
++        close(d);
++    }
++    return true;
++}
++
++// the eMMC's CID (a card that's type MMC: the handheld's own memory, not the SD card), "" if none
++static std::string emmc_cid(const std::string& root) {
++    const std::string dir = root + "/sys/bus/mmc/devices";
++    DIR* d = opendir(dir.c_str());
++    if (!d) return "";
++    std::string best;
++    while (dirent* e = readdir(d)) {
++        if (e->d_name[0] == '.') continue;
++        const std::string base = dir + "/" + e->d_name;
++        if (first_line(base + "/type") != "MMC") continue;
++        std::string cid = first_line(base + "/cid");
++        if (cid.size() >= 16 && (best.empty() || cid < best)) best = cid;  // (the same one every time if two)
++    }
++    closedir(d);
++    return best;
++}
++
++static std::string wlan_mac(const std::string& root) {
++    std::string a = first_line(root + "/sys/class/net/wlan0/address");
++    std::array<uint8_t, 6> m;
++    return parse_mac(a, m) ? format_mac(m) : "";
++}
++
++static std::array<uint8_t, 6> mac_from_seed(const std::string& seed) {
++    uint32_t h = 2166136261u;
++    for (char c : seed) h = (h ^ (uint8_t)c) * 16777619u;
++    h = (h ^ (h >> 24)) & 0xFFFFFF;
++    // not the address every BananaOS handheld had before (00:09:BF:11:22:33), nor all zeros or all ones
++    if (h == 0x112233 || h == 0 || h == 0xFFFFFF) h ^= 0x5A5A5A;
++    return {0x00, 0x09, 0xBF, (uint8_t)(h >> 16), (uint8_t)(h >> 8), (uint8_t)h};
++}
++
++WifiMac choose_wifi_mac(const std::string& setting, const std::string& mac_file, const std::string& wfc_file,
++                        const std::string& sysroot) {
++    WifiMac r;
++    std::array<uint8_t, 6> saved{};
++    bool have_saved = false;
++    if (!mac_file.empty() && exists(mac_file)) {
++        const std::string l = first_line(mac_file);
++        if (parse_mac(l, saved)) have_saved = true;
++        else {
++            Log(LogLevel::Warn, "[wifi] %s doesn't hold a MAC (\"%s\"): set aside as %s.bad\n", mac_file.c_str(),
++                l.c_str(), mac_file.c_str());
++            rename(mac_file.c_str(), (mac_file + ".bad").c_str());
++        }
++    }
++    if (!setting.empty()) {
++        if (parse_mac(setting, r.mac)) {
++            r.source = "the wifi.mac setting";
++            if (have_saved && saved != r.mac)
++                Log(LogLevel::Warn, "[wifi] wifi.mac=%s isn't the saved MAC %s: a game's WFC ID made with the other "
++                    "one may be refused\n", format_mac(r.mac).c_str(), format_mac(saved).c_str());
++            return r;  // (not saved: without the setting the saved one comes back)
++        }
++        Log(LogLevel::Warn, "[wifi] wifi.mac=%s isn't a MAC (xx:xx:xx:xx:xx:xx, not multicast): ignored\n",
++            setting.c_str());
++    }
++    if (have_saved) {
++        r.mac = saved;
++        r.source = "saved in " + mac_file;
++        return r;
++    }
++    std::string how;
++    if (!wfc_file.empty() && exists(wfc_file)) {
++        // WFC settings saved without a MAC beside them: their WFC ID was made with the old MAC; keep it
++        r.mac = wifi_mac();
++        how = "the MAC before (" + wfc_file + " was there already)";
++    } else if (std::string cid = emmc_cid(sysroot); !cid.empty()) {
++        r.mac = mac_from_seed("bananads-mac/emmc-cid/" + cid);
++        how = "made from the eMMC's CID";
++    } else if (std::string w = wlan_mac(sysroot); !w.empty()) {
++        r.mac = mac_from_seed("bananads-mac/wlan0/" + w);
++        how = "made from wlan0's MAC";
++    } else {
++        uint8_t b[3] = {0, 0, 0};
++        if (getrandom(b, sizeof b, 0) != (ssize_t)sizeof b) {
++            uint32_t t = (uint32_t)time(nullptr) ^ (uint32_t)getpid() * 2654435761u;
++            b[0] = (uint8_t)(t >> 16); b[1] = (uint8_t)(t >> 8); b[2] = (uint8_t)t;
++        }
++        char seed[32];
++        snprintf(seed, sizeof seed, "bananads-mac/random/%02x%02x%02x", b[0], b[1], b[2]);
++        r.mac = mac_from_seed(seed);
++        how = "random";
++    }
++    if (mac_file.empty()) {
++        r.source = how + ", not kept (no file)";
++        return r;
++    }
++    std::string text = format_mac(r.mac) + "\n# the DS's MAC, BananaDS's (" + how + "); it stays this one\n";
++    if (write_file_durable(mac_file, text.data(), text.size())) r.source = how + ", saved in " + mac_file;
++    else {
++        Log(LogLevel::Warn, "[wifi] couldn't save the MAC in %s (%s)\n", mac_file.c_str(), strerror(errno));
++        r.source = how + ", not saved";
++    }
++    return r;
++}
++
++// ---- the Nintendo WFC settings --------------------------------------------------------------------------------
++
++static bool wfc_layout_ok(const melonDS::Firmware& fw) {
++    const u32 eap = fw.GetExtendedAccessPointOffset(), ap = fw.GetWifiAccessPointOffset();
++    return eap + 3 * sizeof(melonDS::Firmware::ExtendedWifiAccessPoint) == ap &&
++           ap + 3 * sizeof(melonDS::Firmware::WifiAccessPoint) <= fw.Length() &&
++           eap + kWfcSettingsSize <= fw.Length();
++}
++
++bool wfc_settings_get(const melonDS::Firmware& fw, std::vector<uint8_t>& out) {
++    if (!fw.Buffer() || !wfc_layout_ok(fw)) return false;
++    const u8* p = fw.GetExtendedAccessPointPosition();
++    out.assign(p, p + kWfcSettingsSize);
++    return true;
++}
++
++int wfc_settings_load(melonDS::Firmware& fw, const std::string& path) {
++    FILE* f = fopen(path.c_str(), "rb");
++    if (!f) return 0;
++    std::vector<uint8_t> b(kWfcSettingsSize + 1);
++    const size_t n = fread(b.data(), 1, b.size(), f);
++    fclose(f);
++    if (n != kWfcSettingsSize) {
++        Log(LogLevel::Warn, "[wifi] %s is %zu%s bytes, not %zu: set aside as %s.bad, the WFC settings start empty\n",
++            path.c_str(), n, n > kWfcSettingsSize ? "+" : "", kWfcSettingsSize, path.c_str());
++        rename(path.c_str(), (path + ".bad").c_str());
++        return -1;
++    }
++    if (!fw.Buffer() || !wfc_layout_ok(fw)) {
++        Log(LogLevel::Warn, "[wifi] the firmware's access points aren't where %s expects them: not loaded\n",
++            path.c_str());
++        return -1;
++    }
++    constexpr size_t kExt = 3 * sizeof(melonDS::Firmware::ExtendedWifiAccessPoint);
++    constexpr size_t kAP = sizeof(melonDS::Firmware::WifiAccessPoint);
++    u8* dst = fw.GetExtendedAccessPointPosition();
++    int good = 0;
++    for (int i = 0; i < 3; i++) {
++        const u8* ap = b.data() + kExt + i * kAP;
++        const u16 sum = (u16)(ap[0xFE] | ap[0xFF] << 8);
++        if (melonDS::CRC16(ap, 0xFE, 0x0000) != sum) {
++            Log(LogLevel::Warn, "[wifi] %s: access point %d's checksum is wrong: it starts empty\n", path.c_str(), i + 1);
++            continue;
++        }
++        memcpy(dst + kExt + i * kAP, ap, kAP);
++        good++;
++    }
++    memcpy(dst, b.data(), kExt);  // the DSi's extended ones, as melonDS keeps them (a DS doesn't read them)
++    return good ? 1 : -1;
++}
++
+ static uint16_t rd16(const uint8_t* p) { return (uint16_t)(p[0] << 8 | p[1]); }
+ static void wr16(uint8_t* p, uint16_t v) { p[0] = v >> 8; p[1] = (uint8_t)v; }
+ static uint32_t rd32(const uint8_t* p) { return (uint32_t)rd16(p) << 16 | rd16(p + 2); }
+diff --git a/bananads/src/wifi.h b/bananads/src/wifi.h
+index 4c9bbe2..7086ecb 100644
+--- a/bananads/src/wifi.h
++++ b/bananads/src/wifi.h
+@@ -12,17 +12,19 @@
+ //   system   the handheld's own resolver (melonDS's default: no WFC revival)
+ // WfcDns forwards the DS's DNS queries to that server and hands the answers back as if from slirp's DNS.
+ //
+-// Each handheld gets its own MAC (Nintendo's 00:09:BF prefix, the rest from /etc/machine-id): WFC servers tell
+-// players apart by MAC, and DraStic's firmware gives every device 00:01:02:03:04:05.
++// Each handheld gets its own MAC (Nintendo's 00:09:BF prefix; choose_wifi_mac below, kept in wifi.mac_file): WFC
++// servers tell players apart by MAC, and DraStic's firmware gives every device 00:01:02:03:04:05.
+ #pragma once
+ #include <array>
+ #include <cstdint>
+ #include <map>
+ #include <memory>
+ #include <string>
++#include <vector>
+ 
+ #include "NetDriver.h"
+ #include "Platform.h"
++#include "SPI_Firmware.h"
+ 
+ namespace bananads {
+ 
+@@ -33,6 +35,35 @@ uint32_t wfc_dns_address(const std::string& name);
+ std::array<uint8_t, 6> wifi_mac_from_id(const std::string& machine_id);
+ std::array<uint8_t, 6> wifi_mac();  // from /etc/machine-id
+ 
++// ---- the DS's MAC, one per handheld and kept for good ---------------------------------------------------------
++// BananaOS has no /etc/machine-id, so wifi_mac() gave every handheld 00:09:BF:11:22:33 (two of them clash in
++// local wireless). The MAC is chosen once and kept: wifi.mac (BANANADS_WIFI_MAC) if set; else the one saved in
++// mac_file; else, with no saved MAC but WFC settings already saved (wfc_file), wifi_mac()'s as before (the
++// settings' WFC ID was made with it); else one made from the eMMC's CID, wlan0's MAC or at random (00:09:BF:...),
++// saved in mac_file. A saved MAC never changes. `sysroot` prefixes /sys for the tests ("" on the handheld).
++struct WifiMac {
++    std::array<uint8_t, 6> mac{};
++    std::string source;
++};
++bool parse_mac(const std::string& s, std::array<uint8_t, 6>& out);  // "00:09:bf:12:34:56" (or with '-')
++std::string format_mac(const std::array<uint8_t, 6>& m);
++WifiMac choose_wifi_mac(const std::string& setting, const std::string& mac_file, const std::string& wfc_file,
++                        const std::string& sysroot = "");
++// the file replaced whole or not at all: path.tmp written, fsynced, renamed over path, the folder fsynced
++bool write_file_durable(const std::string& path, const void* data, size_t len);
++
++// ---- the Nintendo WFC settings, kept between sessions ---------------------------------------------------------
++// The firmware is generated at every start, so the access points the game writes (with the Nintendo WFC ID:
++// SPI_Firmware.h WifiAccessPoint::NintendoWFCID) were lost at quit and the game asked for a new WFC ID at the next
++// connection. As melonDS's own frontend (EmuInstance.cpp, Platform.cpp WriteFirmware): the extended access points
++// and the access points, side by side in the generated firmware, 3 x (512 + 256) bytes, the same wfcsettings.bin.
++constexpr size_t kWfcSettingsSize = 3 * (512 + 256);
++// the region as it is now in fw (false: not the generated firmware's layout)
++bool wfc_settings_get(const melonDS::Firmware& fw, std::vector<uint8_t>& out);
++// the file into fw's region (before UpdateChecksums). An access point whose checksum is wrong keeps fw's own; a
++// file of the wrong size is set aside as <path>.bad. 1 loaded, 0 no file, -1 not usable
++int wfc_settings_load(melonDS::Firmware& fw, const std::string& path);
++
+ // Wraps another NetDriver (slirp). DNS queries to slirp's DNS address go to `upstream` instead.
+ class WfcDns : public melonDS::NetDriver {
+ public:
