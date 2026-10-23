@@ -1,0 +1,72 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: BananaDS <bananads@localhost>
+Date: Fri, 23 Oct 2026 12:00:00 +0000
+Subject: [PATCH 95/95] LAN: one session after another in the same run, and discovery
+ beside a host
+
+A frontend that ends a LAN session and starts another in the same run (BananaDS's in-game LAN page: host, then
+disconnect and join someone else) got the old session's players, connected and MP-active bits, miss counts and
+last host back in the new one. EndSession now clears them.
+
+The discovery socket gets SO_REUSEADDR before its bind, so a host and a player looking for hosts on the same
+machine (or a frontend restarting discovery right after ending a session) both hear the hosts' broadcasts.
+
+Wifi::IsPoweredOn() tells the frontend whether the game's wifi is already on when a session starts, so it can
+call MP_Begin for it (melonDS called it before there was a session to tell).
+---
+ src/Wifi.h      |  2 ++
+ src/net/LAN.cpp | 18 ++++++++++++++++++
+ 2 files changed, 20 insertions(+)
+
+diff --git a/src/Wifi.h b/src/Wifi.h
+index 870c5e2..36595f4 100644
+--- a/src/Wifi.h
++++ b/src/Wifi.h
+@@ -174,6 +174,8 @@ public:
+     const u8* GetBSSID() const;
+     // BananaDS: the game's Wi-Fi is in a local multiplayer mode (host beaconing or client synced)
+     bool InMPMode() const { return IsMP; }
++    // BananaDS: the game's Wi-Fi is powered on (Platform::MP_Begin was called and MP_End not since)
++    bool IsPoweredOn() const { return PowerOn; }
+ 
+ private:
+     melonDS::NDS& NDS;
+diff --git a/src/net/LAN.cpp b/src/net/LAN.cpp
+index 249a6f6..3364660 100644
+--- a/src/net/LAN.cpp
++++ b/src/net/LAN.cpp
+@@ -248,6 +248,11 @@ bool LAN::StartDiscovery()
+         return false;
+     }
+ 
++    // BananaDS: more than one listener on the discovery port (a host and a player looking for hosts on the same
++    // machine, as in the tests): each gets the broadcasts
++    int opt_reuse = 1;
++    setsockopt(DiscoverySocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt_reuse, sizeof(int));
++
+     sockaddr_in_t saddr;
+     memset(&saddr, 0, sizeof(saddr));
+     saddr.sin_family = AF_INET;
+@@ -478,6 +483,19 @@ void LAN::EndSession()
+     enet_host_destroy(Host);
+     Host = nullptr;
+     IsHost = false;
++
++    // BananaDS: nothing of this session carries over into the next one (the frontend can end a session and start
++    // another in the same run): its players, who was connected, who was in a DS group with us
++    Platform::Mutex_Lock(PlayersMutex);
++    memset(Players, 0, sizeof(Players));
++    NumPlayers = 0;
++    MaxPlayers = 0;
++    Platform::Mutex_Unlock(PlayersMutex);
++    ConnectedBitmask = 0;
++    MPActiveBitmask = 0;
++    memset(MPMissCount, 0, sizeof(MPMissCount));
++    LastHostID = -1;
++    LastHostPeer = nullptr;
+ }
+ 
+ 
+-- 
+2.47.3
+
