@@ -1,0 +1,78 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: BananaDS <bananads@localhost>
+Date: Fri, 23 Oct 2026 12:00:00 +0000
+Subject: [PATCH 94/94] LAN: tell players who join late that our wifi is
+ already on
+
+A player learns that another's DS wifi is on only from the Cmd_PlayerConnect sent when that wifi turns on. A
+player that joined the LAN session afterwards treated the host as gone and left MP at its first MP command.
+Whoever has wifi on now sends its own Cmd_PlayerConnect to each player that joins: the host on a new client's
+PlayerInfo, a client on a direct link to another client, and a client on connecting to the host.
+---
+ src/net/LAN.cpp | 15 +++++++++++++++
+ src/net/LAN.h   |  2 ++
+ 2 files changed, 17 insertions(+)
+
+diff --git a/src/net/LAN.cpp b/src/net/LAN.cpp
+index edf7b03..252d179 100644
+--- a/src/net/LAN.cpp
++++ b/src/net/LAN.cpp
+@@ -441,6 +441,7 @@ bool LAN::StartClient(const char* playername, const char* host)
+     LastHostPeer = nullptr;
+     RemotePeers[0] = peer;
+     peer->data = &Players[0];
++    SendWifiStateTo(peer, 0, "the host");
+ 
+     MPActiveBitmask = 0;
+     memset(MPMissCount, 0, sizeof(MPMissCount));
+@@ -706,6 +707,7 @@ void LAN::ProcessHostEvent(ENetEvent& event)
+ 
+                     // broadcast updated player list
+                     HostUpdatePlayerList();
++                    SendWifiStateTo(event.peer, hostside->ID, "a new client");
+                 }
+                 break;
+ 
+@@ -771,6 +773,7 @@ void LAN::ProcessClientEvent(ENetEvent& event)
+ 
+             RemotePeers[playerid] = event.peer;
+             event.peer->data = &Players[playerid];
++            SendWifiStateTo(event.peer, playerid, "a client's direct link");
+         }
+         break;
+ 
+@@ -1299,6 +1302,18 @@ u16 LAN::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
+     }
+ }
+ 
++void LAN::SendWifiStateTo(ENetPeer* peer, int id, const char* why)
++{
++    // ConnectedBitmask only learns another player's wifi state from the Cmd_PlayerConnect/Disconnect it broadcasts
++    // as its wifi powers on/off. A player that joins the LAN session afterwards never had it, kept us 'off', and as
++    // our client dropped every join (RecvHostPacket: the host isn't connected). Resent to it, once, as it joins.
++    if (!peer || !(ConnectedBitmask & (1 << MyPlayer.ID))) return;
++    u8 cmd = Cmd_PlayerConnect;
++    ENetPacket* pkt = enet_packet_create(&cmd, 1, ENET_PACKET_FLAG_RELIABLE);
++    enet_peer_send(peer, Chan_Cmd, pkt);
++    Platform::Log(Platform::LogLevel::Info, "[diag] LAN our wifi is on: told player %d, who just joined (%s)\n", id, why);
++}
++
+ void LAN::MPSetActive(int id, bool on, const char* why)
+ {
+     if (id < 0 || id >= 16) return;
+diff --git a/src/net/LAN.h b/src/net/LAN.h
+index dfbc3fe..e8deff7 100644
+--- a/src/net/LAN.h
++++ b/src/net/LAN.h
+@@ -150,6 +150,8 @@ private:
+     u8 MyMAC[6];         // this console's DS MAC, from the beacons/MP commands it sends (host side)
+     bool MyMACKnown;
+     void MPSetActive(int id, bool on, const char* why);
++    // H: our wifi is on: tell a peer that just joined (it missed the Cmd_PlayerConnect we broadcast as it powered on)
++    void SendWifiStateTo(ENetPeer* peer, int id, const char* why);
+     void MPNoteActivity(ENetPacket* packet);
+ 
+     u32 FrameCount;
+-- 
+2.47.3
+
