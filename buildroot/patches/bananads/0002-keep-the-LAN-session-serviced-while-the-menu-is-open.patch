@@ -1,0 +1,98 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: BananaDS <bananads@localhost>
+Subject: [PATCH] BananaDS: the LAN session serviced while the menu has the
+ game paused
+
+The KMS frontend's menu paused the emulator thread and nobody called MPInterface::Process(), so ENet timed the
+other player out after 5-30 s and the LAN session was lost. While paused, the emulator thread now wakes every
+60 ms and calls Emu::service_net(); a mutex (net_mu_) serialises it with the menu thread's
+save_state/load_state/restart, which can turn the emulated wifi on or off.
+---
+ bananads/src/emu.cpp          | 10 ++++++++++
+ bananads/src/emu.h            |  5 +++++
+ bananads/src/frontend_kms.cpp |  7 ++++++-
+ 3 files changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/bananads/src/emu.cpp b/bananads/src/emu.cpp
+index f6dda40..04317b2 100644
+--- a/bananads/src/emu.cpp
++++ b/bananads/src/emu.cpp
+@@ -151,6 +151,7 @@ void Emu::set_clock() {
+ }
+ 
+ void Emu::restart() {
++    std::lock_guard<std::mutex> g(net_mu_);
+     nds_->Reset();
+     nds_->SetupDirectBoot(game_ + ".nds");
+     set_clock();
+@@ -710,6 +711,13 @@ void Emu::setup_slice() {
+         Log(LogLevel::Info, "[emu] scheduler slice %ld, %ld while %ld cycles away from IPC\n", slice, idle, hold);
+ }
+ 
++void Emu::service_net() {
++#ifdef BANANADS_LAN
++    std::lock_guard<std::mutex> g(net_mu_);
++    if (local_) MPInterface::Get().Process();
++#endif
++}
++
+ void Emu::run_frame() {
+ #ifdef BANANADS_LAN
+     if (local_) MPInterface::Get().Process();
+@@ -895,6 +903,7 @@ std::string Emu::state_path(int slot) const {
+ }
+ 
+ bool Emu::save_state(int slot) {
++    std::lock_guard<std::mutex> g(net_mu_);
+     Savestate st;
+     if (st.Error) return false;
+     nds_->DoSavestate(&st);
+@@ -916,6 +925,7 @@ bool Emu::save_state(int slot) {
+ }
+ 
+ bool Emu::load_state(int slot) {
++    std::lock_guard<std::mutex> g(net_mu_);
+     std::vector<uint8_t> buf;
+     std::string p = state_path(slot);
+     if (!read_file(p, buf) || buf.empty()) return false;
+diff --git a/bananads/src/emu.h b/bananads/src/emu.h
+index a45aab1..f9c1166 100644
+--- a/bananads/src/emu.h
++++ b/bananads/src/emu.h
+@@ -72,6 +72,10 @@ public:
+     bool save_state(int slot);  // slot 0 = the quit/resume state
+     bool load_state(int slot);
+     void restart();  // the game from its start (the in-game menu's Restart game): a reset, booted straight into it
++    // wifi.local (LAN): the network link serviced while the game is paused (the in-game menu), as melonDS's own
++    // frontend does every 75 ms while paused; otherwise ENet times the peers out after 5-30 s and the LAN session
++    // is lost for good. Emulator thread; serialised with the menu's save_state/load_state/restart (net_mu_)
++    void service_net();
+     std::string state_path(int slot) const;
+ 
+     Mic& mic() { return mic_; }
+@@ -114,6 +118,7 @@ private:
+     std::string rom_path_, save_path_, game_;
+     bool stop_ = false;
+     bool local_ = false;
++    std::mutex net_mu_;  // service_net() against the menu thread's save_state/load_state/restart (LAN Begin/End)
+     int scale_ = 1;
+     melonDS::BananaRenderer* banana_ = nullptr;  // the renderer, when it's the Banana 2D engine's
+     std::unique_ptr<uint8_t[]> save_copy_;
+diff --git a/bananads/src/frontend_kms.cpp b/bananads/src/frontend_kms.cpp
+index 02092c7..a316a92 100644
+--- a/bananads/src/frontend_kms.cpp
++++ b/bananads/src/frontend_kms.cpp
+@@ -1286,7 +1286,12 @@ int run_kms(Emu& emu, const Config& cfg) {
+                 std::unique_lock<std::mutex> l(pm);
+                 paused = true;
+                 pcv.notify_all();
+-                pcv.wait(l, [&] { return !pause_req.load() || !run.load(); });
++                // wifi.local: the LAN link kept alive while paused (every 60 ms, as melonDS's frontend does)
++                while (!pcv.wait_for(l, std::chrono::milliseconds(60), [&] { return !pause_req.load() || !run.load(); })) {
++                    l.unlock();
++                    emu.service_net();
++                    l.lock();
++                }
+                 paused = false;
+                 continue;
+             }
