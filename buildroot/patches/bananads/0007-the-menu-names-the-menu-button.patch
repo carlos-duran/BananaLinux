@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: BananaDS <bananads@localhost>
+Subject: [PATCH] BananaDS: the menu names the menu button, not a fixed key
+
+The main page's hint and the keys legend said "F / L3", but the button that opens the menu depends on the
+handheld and its settings (the RG DS's own menu button, among others). They now say "the menu button" and
+"MENU"; docs/SETTINGS.md likewise.
+---
+ bananads/docs/SETTINGS.md | 2 +-
+ bananads/src/menu.c       | 4 ++--
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/bananads/docs/SETTINGS.md b/bananads/docs/SETTINGS.md
+index cddc53a..568f05d 100644
+--- a/bananads/docs/SETTINGS.md
++++ b/bananads/docs/SETTINGS.md
+@@ -104,7 +104,7 @@ key can also come from the environment as `BANANADS_<KEY>` (dots become undersco
+ | `sdl.refresh` | `60` | the presents per second with `sdl.vsync=off` (the display's refresh: the RG DS Plus's panels run at 60.003 Hz) |
+ | `kms.top` | `$BANANADS_TOP`, else `DSI-2` | the connector of the panel that shows the top screen; the other connected panel of the same type shows the bottom one (`Virtual-2` in QEMU) |
+ | `kms.touch` | `$BANANADS_TOUCH`, else `fe5e0000.i2c` | the bottom panel's touchscreen: the input device whose sysfs path contains this |
+-| `kms.menu` | `on` | the in-game menu (src/menu.c: SuperDrastic's, in BananaOS's colours): L3 pauses the game and opens it on both panels. Resume, Save and Load (8 slots with pictures; a load can be undone), Quick settings (volume, brightness, the microphone's meter and a blow, Cheats, LAN multiplayer, the emulator's options), Restart game, Quit game; in a local wireless game (`wifi.local`, another handheld in it) the game keeps running behind the menu (`kms.menu_live`) and Save, Load, Restart game and Cheats are off, as are F + R / F + L. `kms.menu_test=<n>` opens it 3 s in, on the main page (1), Save (2), Load (3), Quick settings (4) or the quit question (5), for tests |
++| `kms.menu` | `on` | the in-game menu (src/menu.c: SuperDrastic's, in BananaOS's colours): the menu button pauses the game and opens it on both panels. Resume, Save and Load (8 slots with pictures; a load can be undone), Quick settings (volume, brightness, the microphone's meter and a blow, Cheats, LAN multiplayer, the emulator's options), Restart game, Quit game; in a local wireless game (`wifi.local`, another handheld in it) the game keeps running behind the menu (`kms.menu_live`) and Save, Load, Restart game and Cheats are off, as are F + R / F + L. `kms.menu_test=<n>` opens it 3 s in, on the main page (1), Save (2), Load (3), Quick settings (4) or the quit question (5), for tests |
+ | `kms.menu_live` | `on` | in a local wireless game the menu opens over the running game instead of pausing it (a paused handheld stops answering and the others drop it): the game gets no buttons and no touch, the top screen behind the menu keeps the frame from the moment it opened, the sound goes on; Resume, Quick settings and Quit game work, the rest is off. Once the local game has been over for 3 s the game pauses and the menu is the usual one. `off`: the menu pauses, as before |
+ | `kms.menu_live_volume` | `50` | the game's sound while the menu is open over it, in % (100: unchanged) |
+ | (LAN multiplayer) | | the menu's Quick settings > LAN multiplayer page (builds with `BANANADS_LAN`): Mode Off / Host / Join, Players (2-16, 4 by default, for a host, while nobody else is in its session), Hosts found (Join: the hosts melonDS's LAN discovery hears on UDP 7063, each with its name, players and address; A joins one, the menu stays usable while it connects, up to 5 s, and says when it fails), the session's players with their ping, and Disconnect (a host's session ends, Off; a joined player goes back to looking for hosts). The mode changes without a restart while no local wireless game is on; during one only Disconnect works, after a question. The choice is kept in `wifi.local` and `wifi.local_players`; `BANANADS_WIFI_LOCAL` or `BANANADS_WIFI_LOCAL_PLAYERS` in the environment (BananaLinux: `/data/banana/bananads.env`) still win at each start, and the page says so while one is set |
+diff --git a/bananads/src/menu.c b/bananads/src/menu.c
+index 280d964..98bf98a 100644
+--- a/bananads/src/menu.c
++++ b/bananads/src/menu.c
+@@ -685,7 +685,7 @@ static void draw_top(void) {
+             y += S(16);
+             text(c, &F_MED, "BUTTONS", L, y, S(14), C_TEALTXT, 0, 0);
+             y += S(28);
+-            static const char *const keys[][2] = { { "F / L3", "this menu" }, { "F + R", "save to slot 1" },
++            static const char *const keys[][2] = { { "MENU", "this menu" }, { "F + R", "save to slot 1" },
+                                                    { "F + L", "load slot 1" }, { "F + START", "save your spot and quit" } };
+             for (int i = 0; i < 4 && y + S(24) <= y1 - S(12); i++, y += S(30)) {
+                 float kw = text_w(&F_MED, keys[i][0], S(15), 99) + S(14);
+@@ -864,7 +864,7 @@ static void draw_bottom(void) {
+             text(c, &F_MED, tile_label[i], x + tw / 2.0f, y + S(86), S(20), fg, tw - S(16), 1);
+             char h[64] = "";
+             switch (i) {
+-            case 0: snprintf(h, sizeof h, "or press F / L3"); break;
++            case 0: snprintf(h, sizeof h, "or the menu button"); break;
+             case 1: snprintf(h, sizeof h, "%d slots", NSLOT); break;
+             case 2: if (nb >= 0) snprintf(h, sizeof h, "last: slot %d", nb + 1); else snprintf(h, sizeof h, "no saves yet"); break;
+             case 3: snprintf(h, sizeof h, H.opt_count && H.opt_count(H.ctx) ? "volume, shader, effects" : "volume, brightness"); break;
