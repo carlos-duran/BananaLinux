@@ -5,6 +5,7 @@ config BR2_PACKAGE_BANANADS
 	select BR2_PACKAGE_LIBDRM
 	select BR2_PACKAGE_ALSA_LIB
 	select BR2_PACKAGE_ZLIB
+	select BR2_PACKAGE_ENET
 	help
 	  BananaDS, the Nintendo DS emulator on melonDS's core, with SuperDrastic's display path, governor and sound
 	  (github.com/JorreFog/SuperDrastic, bananads/). Its launcher is /usr/libexec/banana/run-bananads

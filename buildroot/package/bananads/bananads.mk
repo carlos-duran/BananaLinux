@@ -16,8 +16,8 @@ BANANADS_LICENSE = GPL-3.0+
 BANANADS_LICENSE_FILES = bananads/LICENSE
 # a build folder of its own (bananads/buildroot-build): melonDS's teakra refuses to configure in its source folder
 BANANADS_SUPPORTS_IN_SOURCE_BUILD = NO
-# libdrm (the panels), ALSA (sound and the microphone), zlib (melonDS)
-BANANADS_DEPENDENCIES = libdrm alsa-lib zlib host-pkgconf
+# libdrm (the panels), ALSA (sound and the microphone), zlib (melonDS), ENet (local wireless over the network)
+BANANADS_DEPENDENCIES = libdrm alsa-lib zlib enet host-pkgconf
 
 BANANADS_MELONDS_VERSION = 906e9ebb27da8c6a715cd7abab4abfe8a8d29427
 BANANADS_EXTRA_DOWNLOADS = https://github.com/melonDS-emu/melonDS/archive/$(BANANADS_MELONDS_VERSION).tar.gz
@@ -37,7 +37,8 @@ endef
 BANANADS_POST_PATCH_HOOKS += BANANADS_MELONDS_PATCH
 
 # The handhelds' build (BananaDS's docs/BANANALINUX.md, B1): melonDS's JIT, no SDL window, ALSA, the KMS frontend,
-# no LAN play (libenet), tuned for the Cortex-A55 with link-time optimization
+# local wireless over the network (melonDS's LAN, libenet; off until wifi.local asks for it), tuned for the
+# Cortex-A55 with link-time optimization
 BANANADS_CONF_OPTS = \
 	-DBANANADS_MELONDS_DIR=$(@D)/melonds \
 	-DBANANADS_MELONDS_PATCHES=OFF \
@@ -45,7 +46,7 @@ BANANADS_CONF_OPTS = \
 	-DBANANADS_SDL=OFF \
 	-DBANANADS_ALSA=ON \
 	-DBANANADS_KMS=ON \
-	-DBANANADS_LAN=OFF \
+	-DBANANADS_LAN=ON \
 	-DBANANADS_CPU=cortex-a55 \
 	-DBANANADS_LTO=ON
 

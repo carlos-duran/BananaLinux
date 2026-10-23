@@ -110,6 +110,11 @@ handhelds themselves.
   exit.
 - **Quitting**: F + Start, or `SIGTERM` (shutdown while playing): the resume state, then the save, then the panels
   are given back.
+- **Local wireless over the network**: melonDS's LAN (ENet, UDP 7064 for the game and 7063 for the hosts'
+  broadcasts, once a second), so a DS game's local multiplayer (Download Play, Mario Kart DS's local races) works
+  between two handhelds, or a handheld and desktop melonDS 1.1, on the same Wi-Fi network. `wifi.local = host`
+  starts a session with the game (`wifi.local_players`, 2-16, how many may join), `wifi.local = join:<address>`
+  joins one; the player name is `firmware.nickname` (Settings > Nintendo DS > DS name). Off by default.
 
 What the launcher (`run-bananads`) gives it: the contract's names, and the same as BananaDS's own settings (it reads
 every `BANANADS_<KEY>` as the setting `<key>`, over `/data/bananads/bananads.conf`):
