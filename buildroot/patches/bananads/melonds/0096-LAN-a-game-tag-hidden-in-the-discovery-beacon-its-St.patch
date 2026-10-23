@@ -1,0 +1,143 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Carlos Duran <15650777+carlos-duran@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 12:00:00 +0000
+Subject: [PATCH 96/96] LAN: a game tag hidden in the discovery beacon, its Status,
+ and a host that listens
+
+A frontend that joins or hosts on its own (BananaDS's automatic LAN mode) needs to know which game a host on the
+network plays, and to hear the other hosts while it hosts. The beacon's layout and size stay as they are:
+
+- SetDiscoveryTag() puts "BDS", a version, the game code, flags and a per-object random nonce after the NUL
+  that ends SessionName (at offset 40; the visible name is cut to 39 characters then). melonDS without this
+  patch, on any OS, shows the name up to the NUL and never reads the rest. ReadDiscoveryTag() reads it back.
+- SetDiscoveryStatus() fills the beacon's Status (0 idle, 1 playing), which melonDS's LAN dialog already shows;
+  it was always 0.
+- SetHostListens(true) lets a host read the other beacons (and its own, which tells it its own address) while it
+  sends its own. Off by default: a host behaves as before.
+---
+ src/net/LAN.cpp | 43 +++++++++++++++++++++++++++++++++++++++++--
+ src/net/LAN.h   | 19 +++++++++++++++++++
+ 2 files changed, 60 insertions(+), 2 deletions(-)
+
+diff --git a/src/net/LAN.cpp b/src/net/LAN.cpp
+index 3364660..f39b98c 100644
+--- a/src/net/LAN.cpp
++++ b/src/net/LAN.cpp
+@@ -43,6 +43,7 @@
+ #endif
+ 
+ #include "LAN.h"
++#include <random>
+ 
+ 
+ namespace melonDS
+@@ -148,6 +149,11 @@ LAN::LAN() noexcept : Inited(false)
+ 
+     DiscoverySocket = INVALID_SOCKET;
+     DiscoveryLastTick = 0;
++    {
++        std::random_device rd;
++        DiscoveryNonce = rd() ^ ((u32)Platform::GetUSCount() * 2654435761u);
++        if (!DiscoveryNonce) DiscoveryNonce = 1;
++    }
+ 
+     Active = false;
+     IsHost = false;
+@@ -522,7 +528,18 @@ void LAN::ProcessDiscovery()
+         snprintf(beacon.SessionName, 64, "%s's game", MyPlayer.Name);
+         beacon.NumPlayers = NumPlayers;
+         beacon.MaxPlayers = MaxPlayers;
+-        beacon.Status = 0; // TODO
++        beacon.Status = DiscoveryStatus; // BananaDS: set by the frontend (0 before)
++        if (HasDiscoveryTag)
++        {
++            // BananaDS: the tag after the name's NUL (the name cut to fit before it)
++            char* t = &beacon.SessionName[kDiscoveryTagOffset];
++            beacon.SessionName[kDiscoveryTagOffset - 1] = '\0';
++            memset(t, 0, 64 - kDiscoveryTagOffset);
++            t[0] = 'B'; t[1] = 'D'; t[2] = 'S'; t[3] = 1;
++            memcpy(&t[4], MyDiscoveryTag.GameCode, 4);
++            t[8] = MyDiscoveryTag.Flags;
++            for (int i = 0; i < 4; i++) t[10 + i] = (char)(DiscoveryNonce >> (8 * i));
++        }
+ 
+         sockaddr_in_t saddr;
+         memset(&saddr, 0, sizeof(saddr));
+@@ -532,7 +549,7 @@ void LAN::ProcessDiscovery()
+ 
+         sendto(DiscoverySocket, (const char*)&beacon, sizeof(beacon), 0, (const sockaddr_t*)&saddr, sizeof(saddr));
+     }
+-    else
++    if (!IsHost || HostListens)   // BananaDS: a host can listen too (its own beacon comes back as well)
+     {
+         Platform::Mutex_Lock(DiscoveryMutex);
+ 
+@@ -592,6 +609,28 @@ void LAN::ProcessDiscovery()
+     }
+ }
+ 
++void LAN::SetDiscoveryTag(const char* gamecode, u8 flags)
++{
++    HasDiscoveryTag = gamecode != nullptr;
++    if (!gamecode) return;
++    memcpy(MyDiscoveryTag.GameCode, gamecode, 4);
++    MyDiscoveryTag.Flags = flags;
++    MyDiscoveryTag.Nonce = DiscoveryNonce;
++}
++
++bool LAN::ReadDiscoveryTag(const DiscoveryData& data, DiscoveryTag& tag)
++{
++    // the visible name has to end before the tag, and the tag has to be there
++    if (strnlen(data.SessionName, kDiscoveryTagOffset) >= (size_t)kDiscoveryTagOffset) return false;
++    const char* t = &data.SessionName[kDiscoveryTagOffset];
++    if (t[0] != 'B' || t[1] != 'D' || t[2] != 'S' || t[3] != 1) return false;
++    memcpy(tag.GameCode, &t[4], 4);
++    tag.Flags = (u8)t[8];
++    tag.Nonce = 0;
++    for (int i = 0; i < 4; i++) tag.Nonce |= (u32)(u8)t[10 + i] << (8 * i);
++    return true;
++}
++
+ void LAN::HostUpdatePlayerList()
+ {
+     u8 cmd[2+sizeof(Players)];
+diff --git a/src/net/LAN.h b/src/net/LAN.h
+index 5552786..345d864 100644
+--- a/src/net/LAN.h
++++ b/src/net/LAN.h
+@@ -112,6 +112,20 @@ public:
+     u16 GetMPActiveBitmask() const noexcept { return MPActiveBitmask; }
+     u16 GetOtherPlayersBitmask() const noexcept { return (u16)(ConnectedBitmask & ~(1u << MyPlayer.ID)); }
+ 
++    // BananaDS: a tag in the discovery beacon, hidden after the NUL that ends SessionName, so a frontend can tell
++    // which game a host plays without changing the packet: a melonDS without it shows the name up to the NUL and
++    // ignores the rest. Layout at SessionName[kDiscoveryTagOffset]: "BDS", version 1, the game code (4 bytes), flags,
++    // a padding byte, a nonce (u32, little endian) that is random per LAN object (a frontend finds its own beacon
++    // with it). With a tag, the visible name is cut to kDiscoveryTagOffset - 1 characters.
++    static constexpr int kDiscoveryTagOffset = 40;
++    enum { DiscoveryFlag_Auto = 1 << 0, DiscoveryFlag_Playing = 1 << 1 };
++    struct DiscoveryTag { char GameCode[4]; u8 Flags; u32 Nonce; };
++    void SetDiscoveryTag(const char* gamecode, u8 flags);   // gamecode: 4 characters; nullptr: no tag
++    void SetDiscoveryStatus(u8 status) { DiscoveryStatus = status; }   // the beacon's Status (0 idle, 1 playing)
++    void SetHostListens(bool on) { HostListens = on; }      // a host also reads the others' beacons
++    u32 GetDiscoveryNonce() const { return DiscoveryNonce; }
++    static bool ReadDiscoveryTag(const DiscoveryData& data, DiscoveryTag& tag);
++
+ private:
+     bool Inited;
+     bool Active;
+@@ -124,6 +138,11 @@ private:
+     u32 DiscoveryLastTick;
+     std::map<u32, DiscoveryData> DiscoveryList;
+     Platform::Mutex* DiscoveryMutex;
++    bool HasDiscoveryTag = false;
++    DiscoveryTag MyDiscoveryTag {};
++    u32 DiscoveryNonce = 0;
++    u8 DiscoveryStatus = 0;
++    bool HostListens = false;
+ 
+     Player Players[16];
+     int NumPlayers;
+-- 
+2.47.3
+
