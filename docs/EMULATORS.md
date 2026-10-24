@@ -116,7 +116,7 @@ handhelds themselves.
   Quick settings > LAN multiplayer page hosts a session (Players: 2-16, 4 by default, changed once Host is on), lists the hosts on the
   network and joins one, shows the players with their ping, and disconnects, without restarting the game (Hosts found
   shows only on Join, Disconnect only on the mode that is on; another mode picked while others are in the session asks
-  "Disconnect from Host?" first); during a local wireless game only Disconnect works. Its Auto mode (not the default) needs nothing else (a session it hosts
+  "Disconnect from Host?" first; Auto, Host and Join show desktop melonDS's warning that LAN needs a low network latency and no VPN or tunnel); during a local wireless game only Disconnect works. Its Auto mode (not the default) needs nothing else (a session it hosts
   has Host's size, `wifi.local_players`; no Disconnect: Off leaves at once, also during a local
   wireless game after a question, and Auto again starts afresh): when the game
   turns its wifi on (its multiplayer menu, Download Play) it listens 2-3 s and joins a host of the same game (the

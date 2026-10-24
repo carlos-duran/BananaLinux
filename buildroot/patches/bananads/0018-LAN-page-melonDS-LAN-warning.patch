@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Carlos Duran <15650777+carlos-duran@users.noreply.github.com>
+Subject: [PATCH] BananaDS: the LAN page shows desktop melonDS's LAN warning
+
+Desktop melonDS's Host and Join LAN dialogs warn that LAN needs a low
+network latency and won't work through a VPN or a tunnel. The LAN page
+now shows the same two lines, at the bottom of its status box above
+"Others see you as...", whenever the Mode row is on Auto, Host or Join
+(not Off). Not selectable; left out if the box is too full for it.
+---
+ bananads/docs/SETTINGS.md | 2 +-
+ bananads/src/menu.c       | 4 ++++
+ 2 files changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/bananads/docs/SETTINGS.md b/bananads/docs/SETTINGS.md
+index 488b626..d8366d8 100644
+--- a/bananads/docs/SETTINGS.md
++++ b/bananads/docs/SETTINGS.md
+@@ -110,7 +110,7 @@ key can also come from the environment as `BANANADS_<KEY>` (dots become undersco
+ | `kms.menu` | `on` | the in-game menu (src/menu.c: SuperDrastic's, in BananaOS's colours): the menu button pauses the game and opens it on both panels. Resume, Save and Load (8 slots with pictures; a load can be undone), Quick settings (volume, brightness, the microphone's meter and a blow, Cheats, LAN multiplayer, the emulator's options), Restart game, Quit game; in a local wireless game (`wifi.local`, another handheld in it) the game keeps running behind the menu (`kms.menu_live`) and Save, Load, Restart game and Cheats are off, as are F + R / F + L. `kms.menu_test=<n>` opens it 3 s in, on the main page (1), Save (2), Load (3), Quick settings (4) or the quit question (5), for tests |
+ | `kms.menu_live` | `on` | in a local wireless game the menu opens over the running game instead of pausing it (a paused handheld stops answering and the others drop it): the game gets no buttons and no touch, the top screen behind the menu keeps the frame from the moment it opened, the sound goes on; Resume, Quick settings and Quit game work, the rest is off. Once the local game has been over for 3 s the game pauses and the menu is the usual one. `off`: the menu pauses, as before |
+ | `kms.menu_live_volume` | `50` | the game's sound while the menu is open over it, in % (100: unchanged) |
+-| (LAN multiplayer) | | the menu's Quick settings > LAN multiplayer page (builds with `BANANADS_LAN`): Mode Off / Auto / Host / Join, Players (only with Host on the Mode row: 2-16, 4 by default, changed once Host is on, while nobody else is in its session; greyed, "Turn Host on to change it", while Host is only picked; Auto hosts with the same), Hosts found (Join: the hosts melonDS's LAN discovery hears on UDP 7063, each with its name, players and address; A joins one, the menu stays usable while it connects, up to 5 s, and says when it fails), the session's players with their ping, and Disconnect (Host and Join: a host's session ends, Off; a joined player goes back to looking for hosts). Hosts found shows only with Join on the Mode row (Join on), Disconnect only on the Mode row of the mode that is on. Another mode picked while others are in the session (Host with a player, Join or Auto in a host's session, Auto hosting players) asks first ("Disconnect from Host and switch to Join?", No keeps the mode); alone, or only looking, it switches at once. Auto has neither Players nor Disconnect: Off ends or leaves its session at once, Auto again starts afresh. With no Wi-Fi network, Quick settings' row says "No Wi-Fi" in grey and doesn't open; an open page turns its rows off and says to connect in BananaOS's Settings > Network. Auto says what it is doing: waiting for the game, looking for a host of this game, hosting, in a host's session (a desktop melonDS host said as such), the game online (WFC), or stopped by a problem (and when it tries again). The mode changes without a restart while no local wireless game is on; during one only Disconnect works (Auto: Off), after a question. The choice is kept in `wifi.local` and `wifi.local_players`; `BANANADS_WIFI_LOCAL` or `BANANADS_WIFI_LOCAL_PLAYERS` in the environment (BananaLinux: `/data/banana/bananads.env`) still win at each start, and the page says so while one is set |
++| (LAN multiplayer) | | the menu's Quick settings > LAN multiplayer page (builds with `BANANADS_LAN`): Mode Off / Auto / Host / Join, Players (only with Host on the Mode row: 2-16, 4 by default, changed once Host is on, while nobody else is in its session; greyed, "Turn Host on to change it", while Host is only picked; Auto hosts with the same), Hosts found (Join: the hosts melonDS's LAN discovery hears on UDP 7063, each with its name, players and address; A joins one, the menu stays usable while it connects, up to 5 s, and says when it fails), the session's players with their ping, and Disconnect (Host and Join: a host's session ends, Off; a joined player goes back to looking for hosts). Hosts found shows only with Join on the Mode row (Join on), Disconnect only on the Mode row of the mode that is on. Another mode picked while others are in the session (Host with a player, Join or Auto in a host's session, Auto hosting players) asks first ("Disconnect from Host and switch to Join?", No keeps the mode); alone, or only looking, it switches at once. With Auto, Host or Join on the Mode row, the status box ends with desktop melonDS's LAN warning ("Warning: LAN requires low network latency to work." / "Do not expect it to work through a VPN or any sort of tunnel."). Auto has neither Players nor Disconnect: Off ends or leaves its session at once, Auto again starts afresh. With no Wi-Fi network, Quick settings' row says "No Wi-Fi" in grey and doesn't open; an open page turns its rows off and says to connect in BananaOS's Settings > Network. Auto says what it is doing: waiting for the game, looking for a host of this game, hosting, in a host's session (a desktop melonDS host said as such), the game online (WFC), or stopped by a problem (and when it tries again). The mode changes without a restart while no local wireless game is on; during one only Disconnect works (Auto: Off), after a question. The choice is kept in `wifi.local` and `wifi.local_players`; `BANANADS_WIFI_LOCAL` or `BANANADS_WIFI_LOCAL_PLAYERS` in the environment (BananaLinux: `/data/banana/bananads.env`) still win at each start, and the page says so while one is set |
+ | `kms.queue` | `2` | the most finished frames waiting for the screen (1-3); past that the oldest is dropped. Frames are committed one per refresh, so a game whose frames take 19 and 12 ms in turn still shows a new one at every refresh |
+ | `kms.rt` | `on` | the presenter (the thread that commits the frames) at `SCHED_FIFO` 5, below the sound thread, as SuperDrastic's: a late wake-up finds the last flip still pending and the frame waits a refresh |
+ | `kms.stats` | `0` | every this many frames shown, log the rate of new frames on the panels, the frames emulated per second, the refreshes that showed no new frame and the frames dropped |
+diff --git a/bananads/src/menu.c b/bananads/src/menu.c
+index 5261e12..57f1edf 100644
+--- a/bananads/src/menu.c
++++ b/bananads/src/menu.c
+@@ -1104,6 +1104,10 @@ static void draw_bottom(void) {
+             text(c, &F_REG, l1, x0 + S(18), ty, S(16), C_REDL, tw, 0); ty += S(22);
+             if (n > 1) { text(c, &F_REG, l2, x0 + S(18), ty, S(16), C_REDL, tw, 0); ty += S(22); }
+         }
++        if (lan_pick != BM_LAN_OFF && ty + S(20) <= gy1 - S(74)) {   /* desktop melonDS's LAN warning, above the name */
++            text(c, &F_REG, "Warning: LAN requires low network latency to work.", x0 + S(18), gy1 - S(74), S(15), C_CYAN, tw, 0);
++            text(c, &F_REG, "Do not expect it to work through a VPN or any sort of tunnel.", x0 + S(18), gy1 - S(52), S(15), C_CYAN, tw, 0);
++        }
+         if (ty + S(20) <= gy1 - S(6)) {
+             snprintf(l, sizeof l, "Others see you as %s (DS name in Settings > Nintendo DS)", LS.name);
+             text(c, &F_REG, l, x0 + S(18), gy1 - S(30), S(15), C_GREY, tw, 0);
