@@ -112,7 +112,7 @@ handhelds themselves.
   are given back.
 - **Local wireless over the network** (built with `-DBANANADS_LAN=ON` and ENet; the code and its melonDS patches
   0091-0093 live in SuperDrastic, described in its `bananads/docs/LAN.md`): melonDS's LAN (UDP 7064 for the game,
-  7063 for the hosts' broadcasts), so a DS game's local multiplayer (Download Play, Mario Kart DS's groups and races)
+  7063 for the hosts' broadcasts), so a DS game's local multiplayer (tested with Mario Kart DS's groups and races)
   works between handhelds, or a handheld and stock desktop melonDS 1.0/1.1, on the same Wi-Fi network. The in-game
   menu's Quick settings > LAN multiplayer page picks Off, Auto, Host or Join while the game runs (Players 2-16 with
   Host, the hosts found with Join, Disconnect, the players' ping, a question before leaving a session others are in,

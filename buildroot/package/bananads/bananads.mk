@@ -10,7 +10,7 @@
 
 # for testing, a SuperDrastic fork's bananads-lan branch (local wireless over the network): back to
 # JorreFog/SuperDrastic once its pull request is merged there
-BANANADS_VERSION = eed7f165cf9bbb2f3adc1711292b55c9c1f3e268
+BANANADS_VERSION = dee9f2aa74907670c1be25410ce426dd2cf38671
 BANANADS_SITE = https://github.com/carlos-duran/SuperDrastic.git
 BANANADS_SITE_METHOD = git
 BANANADS_SUBDIR = bananads
