@@ -101,7 +101,7 @@ handhelds themselves.
   by a whole number on the CPU instead.
 - **Input**: the pad and keyboards read (never grabbed), the bottom touchscreen by `BANANADS_TOUCH`. F + Start quits
   (with the resume state), F + R saves slot 1, F + L loads it.
-- **In-game menu**: L3 pauses the game and opens SuperDrastic's menu, in BananaOS's colours, on both panels: Resume,
+- **In-game menu**: the menu button pauses the game and opens SuperDrastic's menu, in BananaOS's colours, on both panels: Resume,
   Save and Load (8 slots with their pictures; a load can be undone), Quick settings (volume and brightness the way
   bananad keeps them, the microphone's meter and a blow), Restart game, Quit game. Touch works on it too.
 - **Clocks**: its own governor: under `banana-perf superdrastic`'s `performance` governor it lowers
@@ -110,6 +110,17 @@ handhelds themselves.
   exit.
 - **Quitting**: F + Start, or `SIGTERM` (shutdown while playing): the resume state, then the save, then the panels
   are given back.
+- **Local wireless over the network** (built with `-DBANANADS_LAN=ON` and ENet; the code and its melonDS patches
+  0091-0093 live in SuperDrastic, described in its `bananads/docs/LAN.md`): melonDS's LAN (UDP 7064 for the game,
+  7063 for the hosts' broadcasts), so a DS game's local multiplayer (Download Play, Mario Kart DS's groups and races)
+  works between handhelds, or a handheld and stock desktop melonDS 1.0/1.1, on the same Wi-Fi network. The in-game
+  menu's Quick settings > LAN multiplayer page picks Off, Auto, Host or Join while the game runs (Players 2-16 with
+  Host, the hosts found with Join, Disconnect, the players' ping, a question before leaving a session others are in,
+  desktop melonDS's warning that LAN needs low latency and no VPN or tunnel). Auto joins a host of the same game when
+  the game turns its wifi on, else hosts. The mode is kept in `bananads.conf` (`wifi.local = off`, `auto`, `host` or
+  `join`; `join:<address>` joins that host), and `BANANADS_WIFI_LOCAL` in `/data/banana/bananads.env` still wins
+  over it (the page says so). The player name is `firmware.nickname` (Settings > Nintendo DS > DS name). Without a
+  Wi-Fi network (Settings > Network) nothing starts and the menu says "No Wi-Fi". Off by default.
 
 What the launcher (`run-bananads`) gives it: the contract's names, and the same as BananaDS's own settings (it reads
 every `BANANADS_<KEY>` as the setting `<key>`, over `/data/bananads/bananads.conf`):
@@ -138,4 +149,7 @@ wins over the file and would freeze the settings screen's choices. Both launcher
 `/data/banana/bananads.env` (shell assignments) adds settings for every run, e.g. `BANANADS_KMS_STATS=600` (the
 frame statistics in the log) or `BANANADS_POWER_CPU_LATENCY_US=100` (the cores kept out of deep idle while a game
 runs: ~1.5% faster, a battery cost not measured yet). BananaDS needs no BIOS or firmware files (melonDS's FreeBIOS and a
-generated firmware).
+generated firmware). The generated firmware keeps two things in `/data/bananads`, which must not be deleted: `wfcsettings.bin`
+(the Nintendo WFC settings a game writes, 2304 bytes as desktop melonDS keeps them: without it every launch asked for
+a new WFC ID and friend code) and `wifi-mac` (the DS's MAC, 00:09:BF and three bytes from the eMMC's CID, so two
+handhelds never share one in local wireless play; `wifi.mac` overrides it).
