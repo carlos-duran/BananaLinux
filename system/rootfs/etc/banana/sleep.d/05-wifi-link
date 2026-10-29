@@ -1,0 +1,10 @@
+#!/bin/sh
+# The direct link (usr/libexec/banana/wifi-link) comes down before a sleep, before 10-wifi: its wifi down would
+# otherwise wait for the link's hold on BananaOS's Wi-Fi lock. The home Wi-Fi isn't started just to be stopped
+# again: 10-wifi brings it back after the wake when it was on before the link. (A link BananaDS started comes down
+# by itself once bananad stops the game; this covers one started by hand.)
+[ -f /run/banana/wifi-link/super.pid ] || exit 0
+case $1 in
+pre) /usr/libexec/banana/wifi-link down --sleep >/dev/null 2>&1 ;;
+esac
+exit 0

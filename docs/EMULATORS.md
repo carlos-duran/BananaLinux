@@ -133,6 +133,17 @@ handhelds themselves.
   `join`; `join:<address>` joins that host), and `BANANADS_WIFI_LOCAL` in `/data/banana/bananads.env` still wins
   over it (the page says so). The player name is `firmware.nickname` (Settings > Nintendo DS > DS name). Without a
   Wi-Fi network (Settings > Network) nothing starts and the menu says "No Wi-Fi". Off by default.
+  The page's Connection row (Router / Direct, `wifi.local_link`) can link the consoles without a router instead:
+  `/usr/libexec/banana/wifi-link` takes wlan0 off the home network (holding `/run/banana/wifi.lock`), joins an open
+  IBSS cell (`bananalink`, 2.4 GHz channel 1 by default; this wpa_supplicant has no IBSS RSN, so it can't be
+  encrypted) with static addresses in 10.42.0.0/16 (host 10.42.0.1, players from their MAC, ARP-checked), and puts
+  the Wi-Fi back on Off, quit, a crash, a sleep (`sleep.d/05-wifi-link`) or its own failure. The cell is looked for
+  first (up to 15 s for a player), and a player checks that the host answers (ARP) and looks for its cell again
+  until it does: with both consoles busy, mac80211's own scan can miss it and start a cell with the same BSSID,
+  which never merges. A host that receives nothing starts its cell again every 20 s: alone for 30 s, mac80211's
+  merge scan leaves the cell unheard on the rtw88 radio (a later player then never gets the host's broadcasts). The console has no
+  internet while it is up. `wifi-link status` says what it is doing; its log is `/data/banana/logs/wifi-link.log`.
+  Not yet tested on the handhelds.
 
 What the launcher (`run-bananads`) gives it: the contract's names, and the same as BananaDS's own settings (it reads
 every `BANANADS_<KEY>` as the setting `<key>`, over `/data/bananads/bananads.conf`):
