@@ -41,7 +41,7 @@ say() { echo "$*"; log "$*"; }
 st_get() { sed -n "s/^$1=//p" "$D/state" 2>/dev/null; }
 st_set() {   # st_set key=value...: the state file rewritten whole (read by status and the up/down waiting)
     { for kv in "$@"; do echo "$kv"; done
-      for k in state role ip freq ssid owner since msg; do
+      for k in state role ip freq ssid owner since msg phase; do
           case " $* " in *" $k="*) ;; *) v=$(st_get $k); [ -n "$v" ] && echo "$k=$v" ;; esac
       done; } > "$D/state.tmp"
     mv -f "$D/state.tmp" "$D/state"
@@ -149,6 +149,8 @@ cell_seen() {   # cell_seen SECONDS: a fresh beacon of the BSSID within that tim
 }
 join_cell() {   # join_cell SECONDS: the cell looked for, then joined (or started); 0 if found
     _f=1; cell_seen "$1" && _f=0
+    # (while the link starts: what it does next, for BananaDS's page; only reported, nothing waits on it)
+    [ -n "$REPORT" ] && { if [ $_f = 0 ]; then st_set phase=joining; else st_set phase=starting; fi; }
     $W enable_network 0 >/dev/null 2>&1; $W reconnect >/dev/null 2>&1
     i=0; while [ $i -lt 40 ]; do $W status 2>/dev/null | grep -qx wpa_state=COMPLETED && break; [ -f "$D/stop" ] && break; sleep 0.5; i=$((i + 1)); done
     ip route replace default dev $IF 2>/dev/null
@@ -193,7 +195,7 @@ restore() {
         "$WIFI" up >> "$LOG" 2>&1 9>&- || log "restore: wifi up failed"
     fi
     touch "$D/restored"
-    st_set state=down role= ip=   # (msg kept: a failure's reason, for up)
+    st_set state=down role= ip= phase=   # (msg kept: a failure's reason, for up)
     rm -f "$D/super.pid" "$D/stop"
     # the home network back: logged; no address after 25 s, BananaOS's wifi restart once
     if [ -n "$HOME_UP" ] && [ "$MODE" != sleep ]; then
@@ -218,7 +220,9 @@ supervise() {   # _supervise ROLE OWNER FREQ MAX HOME_UP
     trap 'restore' EXIT
     # down: the mode in the stop file, then TERM (also while it is still starting)
     trap 'MODE=$(cat "$D/stop" 2>/dev/null); [ "$MODE" = sleep ] || MODE=normal; log "signal ($MODE): restoring"; exit 0' INT TERM HUP
-    st_set state=starting role="$ROLE" ip= freq="$FREQ" ssid="$SSID" owner="$OWNER" since="$(date +%s)" msg=
+    # phase (reported for BananaDS's page): leaving (the home Wi-Fi going down), search (the cell looked for),
+    # joining (heard: joined) or starting (not heard: this one starts it), up
+    st_set state=starting role="$ROLE" ip= freq="$FREQ" ssid="$SSID" owner="$OWNER" since="$(date +%s)" msg= phase=leaving
     # the watchdog: the supervisor gone without its restore (kill -9): the same, from outside
     setsid sh "$SELF" _watchdog $$ "$HOME_UP" < /dev/null > /dev/null 2>&1 &
     "$WIFI" down >> "$LOG" 2>&1 9>&-
@@ -244,13 +248,15 @@ C
     wpa_supplicant -B -i $IF -c "$D/wpa.conf" -P "$D/wpa.pid" -f "$D/wpa.log" 8>&- 9>&- || fail "wpa_supplicant (IBSS) didn't start"
     i=0; while [ $i -lt 20 ] && ! $W ping >/dev/null 2>&1; do sleep 0.25; i=$((i + 1)); done
     if [ "$ROLE" = join ]; then w=15; else w=3; fi
+    st_set phase=search; REPORT=1
     if join_cell $w; then log "the cell is there: joined"; else log "no cell heard in $w s: this one starts it"; fi
+    REPORT=
     [ -f "$D/stop" ] && { log "down asked while starting"; exit 0; }
     $W status 2>/dev/null | grep -qx wpa_state=COMPLETED || fail "no IBSS cell after 20 s (wpa_supplicant: $D/wpa.log)"
     log "ibss: $($W status 2>/dev/null | grep -e '^bssid' -e '^freq' -e '^ssid' -e '^mode' | tr '\n' ' ')"
     IP=$(pick_ip "$ROLE") || fail "no free address on the link"
     set_ip "$IP" || fail "the address $IP couldn't be set"
-    st_set state=up ip="$IP"
+    st_set state=up ip="$IP" phase=up
     log "up: $ROLE at $IP, $SSID on $FREQ MHz, owner ${OWNER:-none}, max ${MAX}s"
     t0=$(date +%s) stopped=0 next=0 tries=0 heard='' rx=$(rx_count) rx_t=$(date +%s) renews=0
     while :; do
@@ -383,7 +389,7 @@ cmd_status() {
     s=$(st_get state); [ -n "$p" ] || s=down
     echo "state=${s:-down}"
     [ -n "$p" ] || exit 0
-    for k in role ip freq ssid owner since msg; do v=$(st_get $k); [ -n "$v" ] && echo "$k=$v"; done
+    for k in role ip freq ssid owner since msg phase; do v=$(st_get $k); [ -n "$v" ] && echo "$k=$v"; done
     # the other consoles seen on the link (ARP entries on wlan0 that answered)
     echo "peers=$(awk -v i=$IF '$6 == i && $3 == "0x2" { n++ } END { print n + 0 }' /proc/net/arp 2>/dev/null)"
     exit 0
