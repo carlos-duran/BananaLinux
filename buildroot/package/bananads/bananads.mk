@@ -8,9 +8,10 @@
 #
 ################################################################################
 
-# for testing, a SuperDrastic fork's bananads-lan-0.5.0.1 branch (local wireless over the network): back to
-# JorreFog/SuperDrastic once its pull request is merged there
-BANANADS_VERSION = 78d9dbb16a7d25ca109a5511c89eeadc0f065b60
+# for testing, a SuperDrastic fork's bananads-lan-local-multiplayer-0.5.0.1 branch (local wireless over the network,
+# its direct link without a router, and the Local multiplayer page): back to JorreFog/SuperDrastic once its pull
+# request is merged there
+BANANADS_VERSION = 61dedcf49d8e9753b936b0da24cbba9aa6d3c0eb
 BANANADS_SITE = https://github.com/carlos-duran/SuperDrastic.git
 BANANADS_SITE_METHOD = git
 BANANADS_SUBDIR = bananads
