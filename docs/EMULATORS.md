@@ -126,13 +126,28 @@ handhelds themselves.
   0093-0095 live in SuperDrastic, described in its `bananads/docs/LAN.md`): melonDS's LAN (UDP 7064 for the game,
   7063 for the hosts' broadcasts), so a DS game's local multiplayer (tested with Mario Kart DS's groups and races)
   works between handhelds, or a handheld and stock desktop melonDS 1.0/1.1, on the same Wi-Fi network. The in-game
-  menu's Quick settings > LAN multiplayer page picks Off, Auto, Host or Join while the game runs (Players 2-16 with
+  menu's Quick settings > Local multiplayer page picks Off, Auto, Host or Join while the game runs (Players 2-16 with
   Host, the hosts found with Join, Disconnect, the players' ping, a question before leaving a session others are in,
   desktop melonDS's warning that LAN needs low latency and no VPN or tunnel). Auto joins a host of the same game when
   the game turns its wifi on, else hosts. The mode is kept in `bananads.conf` (`wifi.local = off`, `auto`, `host` or
   `join`; `join:<address>` joins that host), and `BANANADS_WIFI_LOCAL` in `/data/banana/bananads.env` still wins
   over it (the page says so). The player name is `firmware.nickname` (Settings > Nintendo DS > DS name). Without a
   Wi-Fi network (Settings > Network) nothing starts and the menu says "No Wi-Fi". Off by default.
+  The page's Connection row (Router / Direct, `wifi.local_link`; first on the page, Direct by default when the
+  script is there, a kept value respected) can link the consoles without a router instead:
+  `/usr/libexec/banana/wifi-link` takes wlan0 off the home network (holding `/run/banana/wifi.lock`), joins an open
+  IBSS cell (`bananalink`, 2.4 GHz channel 1 by default; this wpa_supplicant has no IBSS RSN, so it can't be
+  encrypted) with static addresses in 10.42.0.0/16 (host 10.42.0.1, players from their MAC, ARP-checked), and puts
+  the Wi-Fi back on Off, quit, a crash, a sleep (`sleep.d/05-wifi-link`) or its own failure. The cell is looked for
+  first (up to 15 s for a player), and a player checks that the host answers (ARP) and looks for its cell again
+  until it does: with both consoles busy, mac80211's own scan can miss it and start a cell with the same BSSID,
+  which never merges. A host that receives nothing starts its cell again every 20 s: alone for 30 s, mac80211's
+  merge scan leaves the cell unheard on the rtw88 radio (a later player then never gets the host's broadcasts). The console has no
+  internet while it is up. `wifi-link status` says what it is doing (while starting, `phase=` leaving, search,
+  joining or starting, which the page shows with the seconds; reporting only); its log is
+  `/data/banana/logs/wifi-link.log`. With Direct, Join's hosts page is "Nearby consoles" (the hosts' DS names, no
+  addresses). Tried by hand on an RG DS and an RG DS Plus (BananaOS 0.5.0.1); Auto with Direct, a sleep with the
+  link up and more than two consoles are untested.
 
 What the launcher (`run-bananads`) gives it: the contract's names, and the same as BananaDS's own settings (it reads
 every `BANANADS_<KEY>` as the setting `<key>`, over `/data/bananads/bananads.conf`):
