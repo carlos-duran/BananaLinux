@@ -11,7 +11,7 @@
 # for testing, a SuperDrastic fork's bananads-lan-directo-0.5.0.1 branch (local wireless over the network, and its
 # direct link without a router, from bananads-lan-0.5.0.1): back to JorreFog/SuperDrastic once its pull request
 # is merged there
-BANANADS_VERSION = 64531e69a2ac3af26d49f499e668798c64bc6797
+BANANADS_VERSION = 9e487cc15fe3be119ef1c33a55b45e1d8cf4de7a
 BANANADS_SITE = https://github.com/carlos-duran/SuperDrastic.git
 BANANADS_SITE_METHOD = git
 BANANADS_SUBDIR = bananads
